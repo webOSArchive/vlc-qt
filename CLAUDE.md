@@ -344,3 +344,17 @@ static void logMsg(const char *fmt, ...) {
 ```
 
 Log file location: `/media/internal/vlcplayer.log` (persists across app restarts, accessible via USB)
+
+### Future Optimizations
+
+**ARM NEON YUV→RGB conversion**: Currently using VLC's swscale for I420→BGRA conversion, which is NEON-optimized and fast. We experimented with requesting I420 output and doing our own YUV→RGB conversion in C, but it was slower than swscale.
+
+A potential optimization would be to write ARM NEON assembly for YUV→RGB conversion combined with scaling in a single pass. This could potentially beat swscale by:
+1. Avoiding the intermediate BGRA buffer (render directly to framebuffer)
+2. Combining color conversion + scaling in one pass
+3. Using NEON SIMD to process 8+ pixels at once
+
+The I420 code path exists in `FBVideoWidget.cpp` (`USE_I420_CONVERSION` flag) but is disabled. To explore this:
+1. Set `USE_I420_CONVERSION=1`
+2. Replace the scalar loop in `renderToFramebuffer()` with NEON intrinsics or inline assembly
+3. Key NEON operations needed: `vld1_u8` (load), `vmull_u8` (multiply), `vqadd_s16` (saturating add), `vqmovun_s16` (narrow with saturation)
