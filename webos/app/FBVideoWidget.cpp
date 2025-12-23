@@ -1,18 +1,44 @@
 /**
  * Framebuffer Video Widget for webOS
  * Bypasses Qt rendering - writes directly to /dev/fb0
+ *
+ * When playing: Qt UI is hidden, video renders fullscreen
+ * When paused: Qt UI is shown, video clears
  */
 
 #include "FBVideoWidget.h"
 
-#include <QPainter>
 #include <QDebug>
+#include <QFile>
+#include <QTextStream>
 
 #include <sys/ioctl.h>
+
+// Debug logging to file (stderr doesn't go to syslog on webOS)
+static FILE *g_logFile = nullptr;
+
+static void logMsg(const char *fmt, ...) {
+    if (!g_logFile) {
+        g_logFile = fopen("/media/internal/vlcplayer.log", "a");
+        if (g_logFile) {
+            fprintf(g_logFile, "\n=== VLC Player Started ===\n");
+            fflush(g_logFile);
+        }
+    }
+    if (g_logFile) {
+        va_list args;
+        va_start(args, fmt);
+        vfprintf(g_logFile, fmt, args);
+        va_end(args);
+        fflush(g_logFile);
+    }
+}
+
 #include <sys/mman.h>
 #include <linux/fb.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <stdarg.h>
 #include <string.h>
 
 #include "MediaPlayer.h"
@@ -39,18 +65,21 @@ FBVideoWidget::FBVideoWidget(QWidget *parent)
       m_screenX(0),
       m_screenY(0),
       m_renderWidth(0),
-      m_renderHeight(0)
+      m_renderHeight(0),
+      m_isPlaying(false),
+      m_firstFrameRendered(false)
 {
-    // Make widget transparent - we render directly to FB
     setAttribute(Qt::WA_OpaquePaintEvent);
     setAttribute(Qt::WA_NoSystemBackground);
-
-    QPalette pal = palette();
-    pal.setColor(QPalette::Window, Qt::black);
-    setPalette(pal);
-    setAutoFillBackground(true);
+    setAutoFillBackground(false);
 
     openFramebuffer();
+
+    // When playing, we render fullscreen - set render region to full FB
+    m_screenX = 0;
+    m_screenY = 0;
+    m_renderWidth = m_fbWidth;
+    m_renderHeight = m_fbHeight;
 }
 
 FBVideoWidget::~FBVideoWidget()
@@ -67,26 +96,23 @@ bool FBVideoWidget::openFramebuffer()
 {
     m_fbFd = open("/dev/fb0", O_RDWR);
     if (m_fbFd < 0) {
-        fprintf(stderr, "FBVideoWidget: Failed to open /dev/fb0: %s\n", strerror(errno));
-        fflush(stderr);
-        return false;
+        logMsg( "FBVideoWidget: Failed to open /dev/fb0: %s\n", strerror(errno));
+                return false;
     }
 
     struct fb_var_screeninfo vinfo;
     struct fb_fix_screeninfo finfo;
 
     if (ioctl(m_fbFd, FBIOGET_FSCREENINFO, &finfo) < 0) {
-        fprintf(stderr, "FBVideoWidget: FBIOGET_FSCREENINFO failed\n");
-        fflush(stderr);
-        ::close(m_fbFd);
+        logMsg( "FBVideoWidget: FBIOGET_FSCREENINFO failed\n");
+                ::close(m_fbFd);
         m_fbFd = -1;
         return false;
     }
 
     if (ioctl(m_fbFd, FBIOGET_VSCREENINFO, &vinfo) < 0) {
-        fprintf(stderr, "FBVideoWidget: FBIOGET_VSCREENINFO failed\n");
-        fflush(stderr);
-        ::close(m_fbFd);
+        logMsg( "FBVideoWidget: FBIOGET_VSCREENINFO failed\n");
+                ::close(m_fbFd);
         m_fbFd = -1;
         return false;
     }
@@ -97,29 +123,24 @@ bool FBVideoWidget::openFramebuffer()
     m_fbStride = finfo.line_length;
     m_fbSize = finfo.smem_len;
 
-    fprintf(stderr, "FBVideoWidget: FB info: %ux%u, %u bpp, stride=%u, size=%zu\n",
+    logMsg( "FBVideoWidget: FB info: %ux%u, %u bpp, stride=%u, size=%zu\n",
             m_fbWidth, m_fbHeight, m_fbBpp, m_fbStride, m_fbSize);
-    fprintf(stderr, "FBVideoWidget: FB format: R=%u/%u G=%u/%u B=%u/%u A=%u/%u\n",
-            vinfo.red.offset, vinfo.red.length,
-            vinfo.green.offset, vinfo.green.length,
-            vinfo.blue.offset, vinfo.blue.length,
-            vinfo.transp.offset, vinfo.transp.length);
-    fflush(stderr);
-
+    logMsg( "FBVideoWidget: FB virtual: %ux%u, offset: %u,%u\n",
+            vinfo.xres_virtual, vinfo.yres_virtual,
+            vinfo.xoffset, vinfo.yoffset);
+    
     m_fbMem = (unsigned char *)mmap(nullptr, m_fbSize, PROT_READ | PROT_WRITE, MAP_SHARED, m_fbFd, 0);
     if (m_fbMem == MAP_FAILED) {
-        fprintf(stderr, "FBVideoWidget: mmap failed: %s\n", strerror(errno));
-        fflush(stderr);
-        ::close(m_fbFd);
+        logMsg( "FBVideoWidget: mmap failed: %s\n", strerror(errno));
+                ::close(m_fbFd);
         m_fbFd = -1;
         m_fbMem = nullptr;
         return false;
     }
 
     m_fbOpen = true;
-    fprintf(stderr, "FBVideoWidget: Framebuffer opened successfully\n");
-    fflush(stderr);
-    return true;
+    logMsg( "FBVideoWidget: Framebuffer opened successfully\n");
+        return true;
 }
 
 void FBVideoWidget::closeFramebuffer()
@@ -146,9 +167,8 @@ void FBVideoWidget::setMediaPlayer(VlcMediaPlayer *player)
 
     if (m_player) {
         libvlc_media_player_t *mp = m_player->core();
-        fprintf(stderr, "FBVideoWidget: Setting callbacks on player %p\n", (void*)mp);
-        fflush(stderr);
-
+        logMsg( "FBVideoWidget: Setting callbacks on player %p\n", (void*)mp);
+        
         libvlc_video_set_callbacks(mp,
                                    lockCallback,
                                    unlockCallback,
@@ -157,78 +177,96 @@ void FBVideoWidget::setMediaPlayer(VlcMediaPlayer *player)
         libvlc_video_set_format_callbacks(mp,
                                           formatCallback,
                                           formatCleanupCallback);
-        fprintf(stderr, "FBVideoWidget: Callbacks set successfully\n");
-        fflush(stderr);
-    }
+        logMsg( "FBVideoWidget: Callbacks set successfully\n");
+            }
 }
 
 void FBVideoWidget::paintEvent(QPaintEvent *event)
 {
     Q_UNUSED(event);
-
-    // Just fill with black - actual video is rendered directly to FB
-    QPainter painter(this);
-    painter.fillRect(rect(), Qt::black);
+    // Do nothing - we render directly to framebuffer when playing
 }
 
 void FBVideoWidget::resizeEvent(QResizeEvent *event)
 {
     QWidget::resizeEvent(event);
-    updateRenderPosition();
 }
 
 void FBVideoWidget::showEvent(QShowEvent *event)
 {
     QWidget::showEvent(event);
-    updateRenderPosition();
 }
 
 void FBVideoWidget::hideEvent(QHideEvent *event)
 {
     QWidget::hideEvent(event);
-    clearVideoRegion();
+}
+
+void FBVideoWidget::mousePressEvent(QMouseEvent *event)
+{
+    Q_UNUSED(event);
+
+    // If playing, user tapped - emit signal so MainWindow can pause and show UI
+    if (m_isPlaying) {
+        logMsg( "FBVideoWidget: Tapped during playback\n");
+                emit tapped();
+    }
 }
 
 void FBVideoWidget::updateRenderPosition()
 {
-    // Get widget position in screen coordinates
-    QPoint globalPos = mapToGlobal(QPoint(0, 0));
-    m_screenX = globalPos.x();
-    m_screenY = globalPos.y();
-    m_renderWidth = width();
-    m_renderHeight = height();
+    // Always render fullscreen when playing
+    m_screenX = 0;
+    m_screenY = 0;
+    m_renderWidth = m_fbWidth;
+    m_renderHeight = m_fbHeight;
 
-    fprintf(stderr, "FBVideoWidget: Render region: %d,%d %dx%d\n",
+    logMsg( "FBVideoWidget: Render region (fullscreen): %d,%d %dx%d\n",
             m_screenX, m_screenY, m_renderWidth, m_renderHeight);
-    fflush(stderr);
-}
+    }
 
 void FBVideoWidget::clearVideoRegion()
 {
     if (!m_fbOpen || !m_fbMem) return;
 
-    // Clear the video region to black
-    for (int y = m_screenY; y < m_screenY + m_renderHeight && y < (int)m_fbHeight; y++) {
-        if (y < 0) continue;
-        unsigned char *row = m_fbMem + y * m_fbStride + m_screenX * 4;
-        int clearWidth = m_renderWidth;
-        if (m_screenX + clearWidth > (int)m_fbWidth) {
-            clearWidth = m_fbWidth - m_screenX;
-        }
-        if (m_screenX < 0) {
-            row -= m_screenX * 4;
-            clearWidth += m_screenX;
-        }
-        if (clearWidth > 0) {
-            memset(row, 0, clearWidth * 4);
-        }
-    }
+    logMsg( "FBVideoWidget: Clearing video region\n");
+    
+    // Clear entire framebuffer to black
+    memset(m_fbMem, 0, m_fbSize);
 }
 
 void FBVideoWidget::renderToFramebuffer()
 {
-    if (!m_fbOpen || !m_fbMem || !m_hasFrame || m_videoWidth == 0 || m_videoHeight == 0) {
+    static int renderCount = 0;
+
+    if (!m_fbOpen || !m_fbMem) {
+        if (renderCount < 5) logMsg("FBVideoWidget: renderToFB - FB not open\n");
         return;
+    }
+    if (!m_hasFrame) {
+        if (renderCount < 5) logMsg("FBVideoWidget: renderToFB - no frame yet\n");
+        return;
+    }
+    if (m_videoWidth == 0 || m_videoHeight == 0) {
+        if (renderCount < 5) logMsg("FBVideoWidget: renderToFB - video size 0\n");
+        return;
+    }
+
+    // Get current display page offset (for triple buffering)
+    struct fb_var_screeninfo vinfo;
+    unsigned int pageYOffset = 0;
+    if (ioctl(m_fbFd, FBIOGET_VSCREENINFO, &vinfo) == 0) {
+        pageYOffset = vinfo.yoffset;
+        if (renderCount < 5) {
+            logMsg("FBVideoWidget: FB yoffset=%u (page %u)\n",
+                   pageYOffset, pageYOffset / m_fbHeight);
+        }
+    }
+
+    renderCount++;
+    if (renderCount <= 10 || renderCount % 100 == 0) {
+        logMsg("FBVideoWidget: renderToFB #%d, video %ux%u -> FB %ux%u (yoff=%u)\n",
+               renderCount, m_videoWidth, m_videoHeight, m_fbWidth, m_fbHeight, pageYOffset);
     }
 
     m_mutex.lock();
@@ -238,86 +276,71 @@ void FBVideoWidget::renderToFramebuffer()
     unsigned srcHeight = m_videoHeight;
     unsigned srcStride = srcWidth * 4;
 
-    // Calculate aspect-correct target rectangle
+    // Calculate aspect-correct target rectangle (fullscreen)
     float videoAspect = (float)srcWidth / (float)srcHeight;
-    float widgetAspect = (float)m_renderWidth / (float)m_renderHeight;
+    float screenAspect = (float)m_fbWidth / (float)m_fbHeight;
 
     int targetW, targetH, targetX, targetY;
-    if (videoAspect > widgetAspect) {
-        targetW = m_renderWidth;
-        targetH = (int)(m_renderWidth / videoAspect);
+    if (videoAspect > screenAspect) {
+        targetW = m_fbWidth;
+        targetH = (int)(m_fbWidth / videoAspect);
         targetX = 0;
-        targetY = (m_renderHeight - targetH) / 2;
+        targetY = (m_fbHeight - targetH) / 2;
     } else {
-        targetH = m_renderHeight;
-        targetW = (int)(m_renderHeight * videoAspect);
-        targetX = (m_renderWidth - targetW) / 2;
+        targetH = m_fbHeight;
+        targetW = (int)(m_fbHeight * videoAspect);
+        targetX = (m_fbWidth - targetW) / 2;
         targetY = 0;
     }
+
+    // Adjust for current page offset (triple buffering)
+    targetY += pageYOffset;
 
     // Fixed-point scale factors (16.16 format for speed)
     unsigned int scaleX_fp = (srcWidth << 16) / targetW;
     unsigned int scaleY_fp = (srcHeight << 16) / targetH;
 
-    // Render directly to framebuffer with nearest-neighbor scaling
-    // Optimized with fixed-point math and 32-bit word copies
-    for (int y = 0; y < targetH; y++) {
-        int fbY = m_screenY + targetY + y;
-        if (fbY < 0 || fbY >= (int)m_fbHeight) continue;
+    // Page bounds for triple buffering
+    int pageTop = pageYOffset;
+    int pageBottom = pageYOffset + m_fbHeight;
 
-        unsigned int *dstRow = (unsigned int *)(m_fbMem + fbY * m_fbStride + (m_screenX + targetX) * 4);
+    // Render directly to framebuffer with nearest-neighbor scaling
+    for (int y = 0; y < targetH; y++) {
+        int fbY = targetY + y;
+        if (fbY < pageTop || fbY >= pageBottom) continue;
+
+        unsigned int *dstRow = (unsigned int *)(m_fbMem + fbY * m_fbStride + targetX * 4);
         int srcY = (y * scaleY_fp) >> 16;
         if (srcY >= (int)srcHeight) srcY = srcHeight - 1;
         const unsigned int *srcRow = (const unsigned int *)(src + srcY * srcStride);
 
-        // Calculate valid pixel range
-        int startX = 0;
-        int endX = targetW;
-        if (m_screenX + targetX < 0) startX = -(m_screenX + targetX);
-        if (m_screenX + targetX + targetW > (int)m_fbWidth) endX = m_fbWidth - m_screenX - targetX;
-
-        unsigned int srcX_fp = startX * scaleX_fp;
-        for (int x = startX; x < endX; x++) {
+        unsigned int srcX_fp = 0;
+        for (int x = 0; x < targetW; x++) {
             int srcX = srcX_fp >> 16;
-            // Copy pixel as 32-bit word (BGRA)
             dstRow[x] = srcRow[srcX];
             srcX_fp += scaleX_fp;
         }
     }
 
-    // Fill black bars
+    // Fill black bars (letterbox/pillarbox) - adjusted for page offset
     // Top bar
-    for (int y = 0; y < targetY; y++) {
-        int fbY = m_screenY + y;
-        if (fbY < 0 || fbY >= (int)m_fbHeight) continue;
-        unsigned char *dstRow = m_fbMem + fbY * m_fbStride + m_screenX * 4;
-        memset(dstRow, 0, m_renderWidth * 4);
+    for (int y = pageTop; y < targetY && y < pageBottom; y++) {
+        memset(m_fbMem + y * m_fbStride, 0, m_fbWidth * 4);
     }
     // Bottom bar
-    for (int y = targetY + targetH; y < m_renderHeight; y++) {
-        int fbY = m_screenY + y;
-        if (fbY < 0 || fbY >= (int)m_fbHeight) continue;
-        unsigned char *dstRow = m_fbMem + fbY * m_fbStride + m_screenX * 4;
-        memset(dstRow, 0, m_renderWidth * 4);
+    for (int y = targetY + targetH; y < pageBottom; y++) {
+        memset(m_fbMem + y * m_fbStride, 0, m_fbWidth * 4);
     }
     // Left bar
     if (targetX > 0) {
-        for (int y = targetY; y < targetY + targetH; y++) {
-            int fbY = m_screenY + y;
-            if (fbY < 0 || fbY >= (int)m_fbHeight) continue;
-            unsigned char *dstRow = m_fbMem + fbY * m_fbStride + m_screenX * 4;
-            memset(dstRow, 0, targetX * 4);
+        for (int y = targetY; y < targetY + targetH && y < pageBottom; y++) {
+            if (y >= pageTop) memset(m_fbMem + y * m_fbStride, 0, targetX * 4);
         }
     }
     // Right bar
-    if (targetX + targetW < m_renderWidth) {
-        int rightBarStart = targetX + targetW;
-        int rightBarWidth = m_renderWidth - rightBarStart;
-        for (int y = targetY; y < targetY + targetH; y++) {
-            int fbY = m_screenY + y;
-            if (fbY < 0 || fbY >= (int)m_fbHeight) continue;
-            unsigned char *dstRow = m_fbMem + fbY * m_fbStride + (m_screenX + rightBarStart) * 4;
-            memset(dstRow, 0, rightBarWidth * 4);
+    if (targetX + targetW < (int)m_fbWidth) {
+        for (int y = targetY; y < targetY + targetH && y < pageBottom; y++) {
+            if (y >= pageTop) memset(m_fbMem + y * m_fbStride + (targetX + targetW) * 4, 0, (m_fbWidth - targetX - targetW) * 4);
         }
     }
 
@@ -330,13 +353,63 @@ void FBVideoWidget::onFrameReady()
 {
     frameCount++;
 
-    // Render every frame directly to framebuffer
-    renderToFramebuffer();
+    // Only render when playing - prevents flickering when paused
+    if (m_isPlaying) {
+        renderToFramebuffer();
 
-    if (frameCount <= 5 || frameCount % 100 == 0) {
-        fprintf(stderr, "FBVideoWidget: onFrameReady %d rendered to FB\n", frameCount);
-        fflush(stderr);
+        // Emit firstFrameReady after we've actually rendered a frame
+        if (!m_firstFrameRendered && m_hasFrame) {
+            m_firstFrameRendered = true;
+            logMsg("FBVideoWidget: First frame rendered - emitting firstFrameReady\n");
+            emit firstFrameReady();
+        }
     }
+
+    if (frameCount <= 10 || frameCount % 100 == 0) {
+        logMsg("FBVideoWidget: onFrameReady %d, isPlaying=%d, hasFrame=%d\n",
+               frameCount, m_isPlaying, m_hasFrame);
+    }
+}
+
+void FBVideoWidget::onPlaybackStarted()
+{
+    logMsg("FBVideoWidget: Playback started - entering fullscreen video mode\n");
+    m_isPlaying = true;
+    m_firstFrameRendered = false;  // Reset for new playback
+
+    // Set fullscreen render region
+    updateRenderPosition();
+
+    // Render current frame if we have one (and trigger firstFrameReady if so)
+    if (m_hasFrame) {
+        renderToFramebuffer();
+        if (!m_firstFrameRendered) {
+            m_firstFrameRendered = true;
+            logMsg("FBVideoWidget: First frame rendered (immediate) - emitting firstFrameReady\n");
+            emit firstFrameReady();
+        }
+    }
+}
+
+void FBVideoWidget::forceSeek()
+{
+    // Force a micro-seek to kick-start VLC frame delivery
+    if (m_player && m_isPlaying) {
+        logMsg("FBVideoWidget: Executing micro-seek to kick-start frames\n");
+        float pos = m_player->position();
+        if (pos < 0.001f) pos = 0.001f;
+        if (pos > 0.999f) pos = 0.999f;
+        m_player->setPosition(pos);
+    }
+}
+
+void FBVideoWidget::onPlaybackStopped()
+{
+    logMsg( "FBVideoWidget: Playback stopped - clearing FB for Qt UI\n");
+        m_isPlaying = false;
+
+    // Clear the framebuffer so Qt can paint
+    clearVideoRegion();
 }
 
 // Static callbacks
@@ -379,9 +452,8 @@ unsigned FBVideoWidget::formatCallback(void **opaque, char *chroma,
 {
     FBVideoWidget *self = static_cast<FBVideoWidget*>(*opaque);
 
-    fprintf(stderr, "FBVideoWidget::formatCallback %ux%u incoming chroma=%.4s\n", *width, *height, chroma);
-    fflush(stderr);
-
+    logMsg( "FBVideoWidget::formatCallback %ux%u incoming chroma=%.4s\n", *width, *height, chroma);
+    
     // Request BGRA format
     memcpy(chroma, "BGRA", 4);
 
@@ -408,12 +480,17 @@ unsigned FBVideoWidget::formatCallback(void **opaque, char *chroma,
     self->m_writeBuffer = 0;
     self->m_readBuffer = 1;
 
-    // Update render position now that we know video size
     self->updateRenderPosition();
 
-    fprintf(stderr, "FBVideoWidget: Requested BGRA at %ux%u (1/%d), buffer=%u bytes\n",
-            scaledWidth, scaledHeight, VIDEO_SCALE_FACTOR, bufferSize);
-    fflush(stderr);
+    logMsg("FBVideoWidget: Requested BGRA at %ux%u (1/%d), buffer=%u bytes\n",
+           scaledWidth, scaledHeight, VIDEO_SCALE_FACTOR, bufferSize);
+
+    // WORKAROUND: Force a micro-seek to kick-start frame delivery
+    // This needs to happen after format is negotiated
+    if (self->m_player) {
+        logMsg("FBVideoWidget: Format ready - forcing micro-seek to start frames\n");
+        QMetaObject::invokeMethod(self, "forceSeek", Qt::QueuedConnection);
+    }
 
     return bufferSize;
 }

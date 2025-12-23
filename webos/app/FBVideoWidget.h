@@ -9,6 +9,7 @@
 #include <QWidget>
 #include <QMutex>
 #include <QByteArray>
+#include <QMouseEvent>
 
 #include <vlc/vlc.h>
 
@@ -29,9 +30,19 @@ protected:
     void resizeEvent(QResizeEvent *event) override;
     void showEvent(QShowEvent *event) override;
     void hideEvent(QHideEvent *event) override;
+    void mousePressEvent(QMouseEvent *event) override;
+
+signals:
+    void tapped();           // Emitted when user taps during playback
+    void firstFrameReady();  // Emitted when first frame is rendered
+
+public slots:
+    void onPlaybackStarted();
+    void onPlaybackStopped();
 
 private slots:
     void onFrameReady();
+    void forceSeek();
 
 private:
     void updateRenderPosition();
@@ -77,6 +88,10 @@ private:
     int m_screenY;
     int m_renderWidth;
     int m_renderHeight;
+
+    // Playback state
+    bool m_isPlaying;
+    bool m_firstFrameRendered;
 };
 
 #endif // FBVIDEOWIDGET_H

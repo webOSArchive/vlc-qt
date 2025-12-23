@@ -201,3 +201,146 @@ Check if app entered qt5 jail (look for "entering qt5 jail"):
 ```bash
 novacom run file:///bin/sh -- -c 'grep vlcplayer /var/log/messages | tail -10'
 ```
+
+### Framebuffer Architecture (Triple Buffering)
+
+The HP TouchPad uses a **triple-buffered framebuffer** for smooth display updates:
+
+```
+/dev/fb0 layout:
+┌─────────────────┐  yoffset=0    (Page 0)
+│   1024 x 768    │
+├─────────────────┤  yoffset=768  (Page 1)
+│   1024 x 768    │
+├─────────────────┤  yoffset=1536 (Page 2)
+│   1024 x 768    │
+└─────────────────┘
+Total: 1024 x 2304 (yres_virtual = 768 * 3)
+```
+
+**Key framebuffer info** (from `FBIOGET_VSCREENINFO`):
+- `xres`, `yres`: Visible screen size (1024x768)
+- `xres_virtual`, `yres_virtual`: Total buffer size (1024x2304)
+- `yoffset`: Currently displayed page (0, 768, or 1536)
+
+**Critical**: When rendering directly to `/dev/fb0`, you must:
+1. Query current `yoffset` via `FBIOGET_VSCREENINFO` before each frame
+2. Add `yoffset` to your target Y coordinates
+3. Clip rendering to the current page bounds (`yoffset` to `yoffset + yres`)
+
+```cpp
+struct fb_var_screeninfo vinfo;
+ioctl(m_fbFd, FBIOGET_VSCREENINFO, &vinfo);
+unsigned int pageYOffset = vinfo.yoffset;  // 0, 768, or 1536
+
+// Adjust target coordinates for current page
+targetY += pageYOffset;
+
+// Clip to current page bounds
+int pageTop = pageYOffset;
+int pageBottom = pageYOffset + m_fbHeight;
+if (fbY < pageTop || fbY >= pageBottom) continue;
+```
+
+Writing to the wrong page results in invisible output or flickering as the display hardware cycles through pages.
+
+### Qt UI vs Direct Framebuffer Rendering
+
+When bypassing Qt to render video directly to `/dev/fb0`, there's a **layer conflict** between Qt's rendering and framebuffer writes. Qt and the video both fight for the same framebuffer, causing flickering.
+
+**Failed approaches**:
+- `Qt::WA_PaintOnScreen` - Still conflicts
+- `Qt::WA_OpaquePaintEvent` + `Qt::WA_NoSystemBackground` - Helps but insufficient
+- Timer-based re-rendering - Just makes flickering faster
+- Event filters to intercept Qt paint events - Too complex, still flickers
+
+**Working solution**: Complete layer separation by hiding Qt during playback:
+
+1. **During video playback**: Hide all Qt UI widgets (title bar, controls). Only keep the video widget visible (to capture touch events). Render video fullscreen directly to framebuffer.
+
+2. **When paused/stopped**: Show Qt UI widgets. Clear the framebuffer region so Qt can paint.
+
+3. **Touch to pause**: Detect taps on the video widget, pause playback, and show UI.
+
+```cpp
+// In MainWindow - hide UI when playing, show when paused
+connect(m_fbVideoWidget, &FBVideoWidget::firstFrameReady, this, &MainWindow::hideForPlayback);
+connect(m_player, &VlcMediaPlayer::paused, this, &MainWindow::showForUI);
+
+void MainWindow::hideForPlayback() {
+    m_titleLabel->hide();
+    m_controlsWidget->hide();
+}
+
+void MainWindow::showForUI() {
+    m_titleLabel->show();
+    m_controlsWidget->show();
+}
+```
+
+### VLC Frame Delivery Timing
+
+VLC's frame delivery has specific timing characteristics that affect UI coordination:
+
+**Problem 1: Frames arrive before "playing" signal**
+- VLC calls `formatCallback` to negotiate video format
+- Frames start arriving via `lock/unlock/display` callbacks
+- THEN the `playing` signal is emitted
+- If you hide UI on `playing`, user sees black screen briefly
+
+**Problem 2: Frames continue after pause**
+- VLC may deliver buffered frames after pause is requested
+- If you render these frames, they overwrite Qt's UI
+- Results in flickering between video and UI when paused
+
+**Solution**: Track frame state explicitly:
+
+```cpp
+// Only render when actually playing
+void FBVideoWidget::onFrameReady() {
+    if (m_isPlaying) {
+        renderToFramebuffer();
+
+        // Signal first frame for UI coordination
+        if (!m_firstFrameRendered && m_hasFrame) {
+            m_firstFrameRendered = true;
+            emit firstFrameReady();
+        }
+    }
+}
+
+// Reset on each new playback
+void FBVideoWidget::onPlaybackStarted() {
+    m_isPlaying = true;
+    m_firstFrameRendered = false;
+}
+
+void FBVideoWidget::onPlaybackStopped() {
+    m_isPlaying = false;
+    clearVideoRegion();  // Let Qt paint
+}
+```
+
+**Key insight**: Use `firstFrameReady` signal (not `playing`) to hide UI. This ensures video is visible before UI disappears, avoiding the black screen flash.
+
+### Debugging on webOS
+
+stderr doesn't appear in `/var/log/messages` on webOS. Use file-based logging:
+
+```cpp
+static FILE *g_logFile = nullptr;
+static void logMsg(const char *fmt, ...) {
+    if (!g_logFile) {
+        g_logFile = fopen("/media/internal/vlcplayer.log", "a");
+    }
+    if (g_logFile) {
+        va_list args;
+        va_start(args, fmt);
+        vfprintf(g_logFile, fmt, args);
+        va_end(args);
+        fflush(g_logFile);
+    }
+}
+```
+
+Log file location: `/media/internal/vlcplayer.log` (persists across app restarts, accessible via USB)

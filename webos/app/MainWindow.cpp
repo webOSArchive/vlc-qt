@@ -11,6 +11,22 @@
 #include <QStyle>
 #include <QApplication>
 #include <QFile>
+#include <stdarg.h>
+
+// Debug logging to file
+static FILE *s_logFile = nullptr;
+static void logMsg(const char *fmt, ...) {
+    if (!s_logFile) {
+        s_logFile = fopen("/media/internal/vlcplayer.log", "a");
+    }
+    if (s_logFile) {
+        va_list args;
+        va_start(args, fmt);
+        vfprintf(s_logFile, fmt, args);
+        va_end(args);
+        fflush(s_logFile);
+    }
+}
 
 #include "Common.h"
 #include "Instance.h"
@@ -35,6 +51,7 @@ MainWindow::MainWindow(QWidget *parent)
       m_instance(nullptr),
       m_media(nullptr),
       m_player(nullptr),
+      m_fbVideoWidget(nullptr),
       m_seeking(false)
 {
     setupVLC();
@@ -48,33 +65,6 @@ MainWindow::MainWindow(QWidget *parent)
 
     setWindowTitle("VLC Player");
     resize(1024, 768);
-
-    // Auto-open test file - use DuckTales episode for longer test
-    QString testFile = "/media/internal/movies/DuckTales/1x32-MicroDucksFromOuterSpace.mp4";
-    if (QFile::exists(testFile)) {
-        fprintf(stderr, "MainWindow: Auto-opening test file: %s\n", testFile.toStdString().c_str());
-        fflush(stderr);
-        openFile(testFile);
-    } else {
-        // Fallback to short test
-        testFile = "/media/internal/test.mp4";
-        if (QFile::exists(testFile)) {
-            fprintf(stderr, "MainWindow: Fallback to test.mp4\n");
-            fflush(stderr);
-            openFile(testFile);
-        } else {
-            fprintf(stderr, "MainWindow: No test files found\n");
-            fflush(stderr);
-        }
-    }
-
-    // Auto-exit after 30 seconds for testing
-    QTimer::singleShot(30000, this, [this]() {
-        fprintf(stderr, "\n=== 30 SECOND TEST COMPLETE ===\n");
-        fprintf(stderr, "Exiting for log analysis\n");
-        fflush(stderr);
-        QApplication::quit();
-    });
 }
 
 MainWindow::~MainWindow()
@@ -120,30 +110,27 @@ void MainWindow::setupUI()
     // Video widget
 #if VIDEO_RENDER_MODE == 3
     // OpenGL ES 2.0 with EGL - hardware accelerated
-    fprintf(stderr, "MainWindow: Using GLESVideoWidget (EGL + OpenGL ES 2.0)\n");
-    fflush(stderr);
-    GLESVideoWidget *videoWidget = new GLESVideoWidget(this);
+    logMsg( "MainWindow: Using GLESVideoWidget (EGL + OpenGL ES 2.0)\n");
+        GLESVideoWidget *videoWidget = new GLESVideoWidget(this);
     videoWidget->setMediaPlayer(m_player);
     m_videoWidget = videoWidget;
 #elif VIDEO_RENDER_MODE == 2
     // Direct framebuffer rendering - bypasses Qt
-    fprintf(stderr, "MainWindow: Using FBVideoWidget (framebuffer)\n");
-    fflush(stderr);
-    FBVideoWidget *videoWidget = new FBVideoWidget(this);
+    logMsg( "MainWindow: Using FBVideoWidget (framebuffer)\n");
+        FBVideoWidget *videoWidget = new FBVideoWidget(this);
     videoWidget->setMediaPlayer(m_player);
     m_videoWidget = videoWidget;
+    m_fbVideoWidget = videoWidget;  // Keep reference for state connections
 #elif VIDEO_RENDER_MODE == 1
     // GPU-accelerated rendering via OpenGL ES 2.0
-    fprintf(stderr, "MainWindow: Using GLVideoWidget (OpenGL)\n");
-    fflush(stderr);
-    GLVideoWidget *videoWidget = new GLVideoWidget(this);
+    logMsg( "MainWindow: Using GLVideoWidget (OpenGL)\n");
+        GLVideoWidget *videoWidget = new GLVideoWidget(this);
     videoWidget->setMediaPlayer(m_player);
     m_videoWidget = videoWidget;
 #else
     // Software rendering for webOS
-    fprintf(stderr, "MainWindow: Using VideoWidget (software)\n");
-    fflush(stderr);
-    VideoWidget *videoWidget = new VideoWidget(this);
+    logMsg( "MainWindow: Using VideoWidget (software)\n");
+        VideoWidget *videoWidget = new VideoWidget(this);
     videoWidget->setMediaPlayer(m_player);
     m_videoWidget = videoWidget;
 #endif
@@ -219,31 +206,45 @@ void MainWindow::setupConnections()
     // VLC connections
     connect(m_player, &VlcMediaPlayer::stateChanged, this, &MainWindow::updateState);
 
+    // FBVideoWidget playback state connections - hide/show UI based on playback
+    if (m_fbVideoWidget) {
+        connect(m_player, &VlcMediaPlayer::playing, m_fbVideoWidget, &FBVideoWidget::onPlaybackStarted);
+        connect(m_player, &VlcMediaPlayer::paused, m_fbVideoWidget, &FBVideoWidget::onPlaybackStopped);
+        connect(m_player, &VlcMediaPlayer::stopped, m_fbVideoWidget, &FBVideoWidget::onPlaybackStopped);
+        connect(m_player, &VlcMediaPlayer::end, m_fbVideoWidget, &FBVideoWidget::onPlaybackStopped);
+
+        // Hide Qt UI only after first video frame is rendered (avoids black screen)
+        connect(m_fbVideoWidget, &FBVideoWidget::firstFrameReady, this, &MainWindow::hideForPlayback);
+        // Show Qt UI when stopped/paused
+        connect(m_player, &VlcMediaPlayer::paused, this, &MainWindow::showForUI);
+        connect(m_player, &VlcMediaPlayer::stopped, this, &MainWindow::showForUI);
+        connect(m_player, &VlcMediaPlayer::end, this, &MainWindow::showForUI);
+
+        // When user taps during playback, pause and show UI
+        connect(m_fbVideoWidget, &FBVideoWidget::tapped, this, &MainWindow::onVideoTapped);
+    }
+
     // Set initial volume
     onVolumeChanged(m_volumeSlider->value());
 }
 
 void MainWindow::openFile(const QString &path)
 {
-    fprintf(stderr, "MainWindow::openFile: %s\n", path.toStdString().c_str());
-    fflush(stderr);
-
+    logMsg( "MainWindow::openFile: %s\n", path.toStdString().c_str());
+    
     if (m_media) {
         delete m_media;
     }
 
     m_media = new VlcMedia(path, true, m_instance);
-    fprintf(stderr, "MainWindow: VlcMedia created, opening with player\n");
-    fflush(stderr);
-
+    logMsg( "MainWindow: VlcMedia created, opening with player\n");
+    
     m_player->open(m_media);
-    fprintf(stderr, "MainWindow: player->open() called, calling play()\n");
-    fflush(stderr);
-
+    logMsg( "MainWindow: player->open() called, calling play()\n");
+    
     m_player->play();
-    fprintf(stderr, "MainWindow: play() called\n");
-    fflush(stderr);
-
+    logMsg( "MainWindow: play() called\n");
+    
     // Update title
     QFileInfo fileInfo(path);
     m_titleLabel->setText(fileInfo.fileName());
@@ -342,6 +343,40 @@ void MainWindow::onMediaChanged()
 {
     m_seekSlider->setValue(0);
     m_timeLabel->setText("00:00 / 00:00");
+}
+
+void MainWindow::hideForPlayback()
+{
+    logMsg( "MainWindow: Hiding UI for video playback\n");
+    
+    // Hide Qt UI widgets so video can render fullscreen
+    // Keep video widget visible to capture touch events
+    m_titleLabel->hide();
+    m_controlsWidget->hide();
+    // m_videoWidget stays visible to receive touch/mouse events
+}
+
+void MainWindow::showForUI()
+{
+    logMsg( "MainWindow: Showing UI\n");
+    
+    // Show Qt UI widgets
+    m_titleLabel->show();
+    m_controlsWidget->show();
+
+    // Force repaint
+    update();
+    repaint();
+}
+
+void MainWindow::onVideoTapped()
+{
+    logMsg( "MainWindow: Video tapped - pausing and showing UI\n");
+    
+    if (m_player && m_player->state() == Vlc::Playing) {
+        m_player->pause();
+    }
+    // showForUI will be called by the paused signal
 }
 
 QString MainWindow::formatTime(int ms) const

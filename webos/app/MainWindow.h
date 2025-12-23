@@ -15,6 +15,7 @@
 class VlcInstance;
 class VlcMedia;
 class VlcMediaPlayer;
+class FBVideoWidget;
 
 class MainWindow : public QMainWindow
 {
@@ -37,6 +38,9 @@ private slots:
     void updatePosition();
     void updateState();
     void onMediaChanged();
+    void hideForPlayback();
+    void showForUI();
+    void onVideoTapped();
 
 private:
     void setupUI();
@@ -51,6 +55,7 @@ private:
 
     // UI components
     QWidget *m_videoWidget;
+    FBVideoWidget *m_fbVideoWidget;  // For FB mode state connections
     QWidget *m_controlsWidget;
     QPushButton *m_playButton;
     QPushButton *m_stopButton;
