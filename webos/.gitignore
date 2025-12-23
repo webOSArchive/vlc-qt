@@ -1,0 +1,25 @@
+# Experiments folder (for testing/debugging, not committed)
+experiments/
+
+# Build outputs
+staging/
+package/
+app/build/
+vlc-build/
+*.ipk
+
+# Qt source tarballs and extracted sources (large, can be re-downloaded)
+qtbase-*.tar.xz
+qtdeclarative-*.tar.xz
+qtbase-opensource-src-*/
+qtdeclarative-opensource-src-*/
+
+# SDK and runtime (device-specific, can be regenerated)
+sdk/
+qt5-runtime/
+
+# ARM VLC build output (can be rebuilt with build scripts)
+vlc-arm/
+
+# Test scripts in /tmp (shouldn't be here but just in case)
+/tmp/

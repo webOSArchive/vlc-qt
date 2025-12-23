@@ -1,0 +1,17 @@
+{
+    "title": "VLC Player",
+    "id": "org.webosarchive.vlcplayer",
+    "version": "1.0.0",
+    "vendor": "VLC-Qt",
+    "type": "pdk",
+    "main": "vlcplayer.sh",
+    "icon": "icon.png",
+    "uiRevision": 2,
+    "keywords": ["video", "media", "player", "vlc", "music", "movie"],
+    "dependencies": [
+        "com.nizovn.qt5",
+        "com.nizovn.glibc",
+        "com.nizovn.openssl"
+    ],
+    "requiredMemory": 300
+}
