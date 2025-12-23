@@ -100,49 +100,104 @@ The `webos/` directory contains a port of VLC-Qt for legacy webOS devices (Touch
 
 The `webos/related-packages/` folder contains all required dependency IPKs:
 - `com.nizovn.qt5` - Qt5 libraries
-- `com.nizovn.glibc` - GNU C Library (compatible with webOS)
+- `com.nizovn.glibc` - GNU C Library (newer than device's built-in glibc)
 - `com.nizovn.openssl` - OpenSSL libraries
 - `com.nizovn.qt5qpaplugins` - Qt5 platform plugins for webOS
-- `com.nizovn.qt5sdk` - **Critical**: Provides custom jailer and jail_qt5.conf that grants apps access to external package directories
+- `com.nizovn.qt5sdk` - **Critical**: Provides custom jailer wrapper and jail_qt5.conf
 - `com.nizovn.cacert` - CA certificates
 - `org.webosinternals.dbus` - D-Bus for webOS
 
-These packages must be installed on the device. The `qt5sdk` package is especially important as it modifies the webOS jail system to allow Qt5 apps to access shared libraries.
+All packages must be installed on the device before running the VLC app.
 
-### webOS App Sandbox (Jail)
+### webOS App Sandbox (Jail System)
 
-webOS runs apps in a sandbox as the `prisoner` user, which restricts access to other app directories. Qt5 apps require access to the `com.nizovn.*` packages.
+webOS runs PDK apps in a jail/sandbox as the `prisoner` user (UID 5xxx). By default, apps can only see their own directory under `/media/cryptofs/apps/usr/palm/applications/`.
 
-**Solution**: Add `qt5sdk` section to `appinfo.json`:
+**The Problem**: Qt5 apps need access to external packages (glibc, Qt5 libs) which are installed as separate apps.
+
+**The Solution**: The `com.nizovn.qt5sdk` package installs:
+1. A wrapper script at `/usr/bin/jailer` that intercepts app launches
+2. A jail config at `/etc/jail_qt5.conf` that mounts external packages
+
+When an app has a `qt5sdk` section in `appinfo.json`, the jailer uses `jail_qt5.conf` which mounts:
+- `com.nizovn.glibc`
+- `com.nizovn.qt5`
+- `com.nizovn.qt5qpaplugins`
+- `com.nizovn.openssl`
+- `com.nizovn.cacert`
+- `org.webosinternals.dbus`
+
+### appinfo.json Configuration
+
 ```json
 {
+    "id": "org.webosarchive.vlcplayer",
     "type": "pdk",
-    "main": "start",
+    "main": "bin/vlcplayer",
     "qt5sdk": {
         "exports": [
+            "QMLSCENE_DEVICE=softwarecontext",
             "VLC_PLUGIN_PATH=/media/cryptofs/apps/usr/palm/applications/org.webosarchive.vlcplayer/plugins/vlc"
         ]
-    }
+    },
+    "requiredMemory": 150
 }
 ```
 
-This tells webOS to use the qt5sdk jail configuration, which mounts the external package directories.
+**Key points:**
+- `"main": "bin/vlcplayer"` - Point directly to the binary (not a shell script)
+- `"qt5sdk": {}` - Presence of this section triggers qt5 jail usage
+- `"exports"` - Environment variables set before app launch (parsed by jailer wrapper)
 
-### Reference Implementation
+**Warning**: An empty exports array `"exports": []` will break the launcher. Either omit exports entirely or include at least one value.
 
-See `~/Projects/qupzilla` for a working Qt5 webOS app example:
-- Uses `qt5sdk` section in appinfo.json
-- Points `main` directly to binary or uses start script
-- Does NOT bundle glibc/Qt5 (uses external packages)
+### Jail Caching Issue
+
+webOS caches jail directory structures at `/var/palm/jail/<appid>/`. If you add `qt5sdk` to an app that was previously installed without it, the cached jail won't have the external package mounts.
+
+**Fix**: Delete the stale jail and relaunch:
+```bash
+novacom run file:///usr/bin/jailer -- -N -i org.webosarchive.vlcplayer
+palm-launch org.webosarchive.vlcplayer
+```
+
+You can verify the jail has correct mounts:
+```bash
+ls /var/palm/jail/org.webosarchive.vlcplayer/media/cryptofs/apps/usr/palm/applications/
+# Should show: com.nizovn.glibc, com.nizovn.qt5, etc.
+```
+
+### Binary Linking
+
+The vlcplayer binary must be linked with:
+- **ELF interpreter**: `/media/cryptofs/apps/usr/palm/applications/com.nizovn.glibc/lib/ld.so`
+- **RPATH**: Paths to app libs, Qt5, glibc, and OpenSSL
+
+This is configured in `webos/cmake/webos-arm-toolchain.cmake`.
 
 ### Build Commands
 
 ```bash
 cd webos
-./build-and-package.sh    # Build VLC-Qt for ARM and package IPK
+./build-and-package.sh    # Build app and create IPK
 ./package-ipk.sh          # Package only (after building)
+```
+
+### Installation & Testing
+
+```bash
+palm-install webos/package-staging/org.webosarchive.vlcplayer_1.0.0_all.ipk
+palm-launch org.webosarchive.vlcplayer
 ```
 
 ### Debugging
 
-Logs are written to `/media/internal/vlc.log` on the device.
+Check jailer logs:
+```bash
+novacom run file:///bin/sh -- -c 'grep jailer /var/log/messages | tail -20'
+```
+
+Check if app entered qt5 jail (look for "entering qt5 jail"):
+```bash
+novacom run file:///bin/sh -- -c 'grep vlcplayer /var/log/messages | tail -10'
+```
