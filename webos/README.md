@@ -188,6 +188,55 @@ novacom run file:///bin/sh -- -c 'tail -50 /var/log/messages | grep jailer'
 novacom run file:///bin/sh -- -c 'tail -50 /var/log/messages | grep qt5'
 ```
 
+## Video Rendering Architecture
+
+The VLC player uses **direct framebuffer rendering** to bypass Qt's rendering system for video playback. This avoids z-order conflicts between Qt widgets and video frames.
+
+### FBVideoWidget
+
+`FBVideoWidget` (`app/FBVideoWidget.cpp`) renders video directly to `/dev/fb0`:
+
+1. **VLC vmem output** - VLC decodes video and provides frames via `lock/unlock/display` callbacks
+2. **Double buffering** - Two frame buffers swap between VLC writes and display reads
+3. **Direct FB rendering** - Frames are scaled and written directly to the framebuffer memory
+4. **Triple buffer handling** - Queries `yoffset` to write to the correct display page (see CLAUDE.md)
+
+### Qt/Video Layer Separation
+
+Qt and direct framebuffer writes conflict - both try to paint to the same memory. The solution is **complete layer separation**:
+
+- **During playback**: Hide all Qt UI widgets, render video fullscreen to FB
+- **When paused/stopped**: Show Qt UI, clear FB region so Qt can paint
+- **Touch to pause**: FBVideoWidget captures taps and emits `tapped()` signal
+
+Key signals:
+- `firstFrameReady()` - Emitted after first video frame renders (used to hide UI)
+- `tapped()` - Emitted when user taps during playback (triggers pause)
+
+### Performance
+
+Current performance with software decoding:
+- ~20 FPS for SD content
+- ~10-15 FPS for 720p (scaled down to 480x270)
+- Video resolution scaled by `VIDEO_SCALE_FACTOR` (default: 2) to reduce CPU load
+
+See `experiments/HARDWARE_DECODING_NOTES.md` for hardware acceleration investigation.
+
+## Current Status
+
+**Working:**
+- Video playback with software decoding (FFmpeg/avcodec)
+- Audio playback via ALSA
+- File browser to select media files
+- Play/pause via touch (tap video to pause, tap play to resume)
+- Seek slider and volume control
+- Proper Qt UI / video layer management (no flickering)
+
+**Known Limitations:**
+- Software decoding only (CPU-intensive for HD content)
+- ~20 FPS maximum due to CPU constraints
+- No hardware acceleration (see HARDWARE_DECODING_NOTES.md)
+
 ## References
 
 - QupZilla browser (`~/Projects/qupzilla`) - Working Qt5 webOS app example

@@ -1,5 +1,60 @@
 # VLC-Qt for webOS - Next Steps
 
+## Current Status (December 2024)
+
+**The VLC player is working!** Basic video playback with software decoding is functional:
+
+- Video plays at ~20 FPS (SD content) via direct framebuffer rendering
+- Audio works via ALSA
+- File picker allows selecting media files
+- Touch to pause/resume works correctly
+- Qt UI and video layers properly separated (no flickering)
+
+See `README.md` "Current Status" section for full details.
+
+---
+
+## Remaining Work
+
+### High Priority
+
+1. **Improve UI/UX**
+   - Better file browser (currently uses Qt's basic file dialog)
+   - Display video metadata (duration, resolution, codec)
+   - Remember last played file/position
+
+2. **Performance optimization**
+   - Profile CPU usage during playback
+   - Consider NEON SIMD for color conversion (NV12→BGRA)
+   - Experiment with different `VIDEO_SCALE_FACTOR` values
+
+3. **Error handling**
+   - Handle unsupported codecs gracefully
+   - Show error messages for failed playback
+   - Handle file access errors
+
+### Medium Priority
+
+4. **Hardware acceleration** (see `experiments/HARDWARE_DECODING_NOTES.md`)
+   - Investigate OMX video output (`--vout=omxil_vout`)
+   - Research GStreamer + libpalmvideodecoder.so
+   - Look at mplayer-webos for hardware decoding approach
+
+5. **Additional features**
+   - Subtitle support
+   - Audio track selection
+   - Playlist support
+   - Resume playback from last position
+
+### Low Priority
+
+6. **Polish**
+   - App icon design
+   - About dialog
+   - Settings persistence
+
+---
+
 ## Project Structure Created
 
 ```
@@ -168,9 +223,13 @@ Edit `MainWindow.cpp` in the `setupVLC()` function to change VLC initialization 
 ## Architecture Notes
 
 ### Video Output
-- webOS uses OpenGL ES 2.0 (PowerVR SGX540)
-- VLC configured with `--enable-gles2`
-- Software fallback may be needed for some content
+The app uses **direct framebuffer rendering** (`FBVideoWidget`), not OpenGL:
+- Writes directly to `/dev/fb0` memory
+- Bypasses Qt's rendering to avoid z-order conflicts
+- TouchPad framebuffer: 1024×768, 32bpp, triple-buffered (yres_virtual=2304)
+- Must handle `yoffset` for correct page targeting
+
+VLC is configured with `--vout=vmem` (memory video output) which provides decoded frames via callbacks. The `FBVideoWidget` receives these frames and renders them to the framebuffer.
 
 ### Audio Output
 - Uses ALSA (`--aout=alsa`)
@@ -179,7 +238,15 @@ Edit `MainWindow.cpp` in the `setupVLC()` function to change VLC initialization 
 ### Memory
 - HP TouchPad has ~1GB RAM
 - VLC + Qt5 can use 150-300MB
+- Video scaled down by `VIDEO_SCALE_FACTOR` to reduce memory usage
 - Avoid HD video if memory-constrained
+
+### Qt/Video Layer Management
+Critical insight: Qt widgets and direct framebuffer writes conflict. Solution:
+- Hide Qt UI during video playback
+- Show Qt UI when paused/stopped
+- Use `firstFrameReady` signal to coordinate UI hiding (not `playing` signal)
+- Gate frame rendering on `m_isPlaying` to prevent overwriting Qt when paused
 
 ---
 
