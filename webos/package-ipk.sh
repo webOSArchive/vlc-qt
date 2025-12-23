@@ -92,8 +92,8 @@ chmod +x "${STAGING_DIR}/${APP_ID}/bin/vlcplayer"
 
 # Copy launcher script
 echo "Copying launcher script..."
-cp "${SCRIPT_DIR}/app/vlcplayer.sh" "${STAGING_DIR}/${APP_ID}/"
-chmod +x "${STAGING_DIR}/${APP_ID}/vlcplayer.sh"
+cp "${SCRIPT_DIR}/app/start" "${STAGING_DIR}/${APP_ID}/"
+chmod +x "${STAGING_DIR}/${APP_ID}/start"
 
 # Copy VLC-Qt libraries (preserve symlinks)
 echo "Copying VLC-Qt libraries..."
@@ -112,6 +112,10 @@ for lib in libavcodec libavformat libavutil libswscale libswresample libpostproc
         cp -P "${LIBVLC_PATH}/lib/${lib}.so"* "${STAGING_DIR}/${APP_ID}/lib/"
     fi
 done
+
+# NOTE: glibc and Qt5 are NOT bundled - they come from external packages:
+#   com.nizovn.glibc, com.nizovn.qt5, com.nizovn.qt5qpaplugins
+# The "qt5sdk" section in appinfo.json grants jail access to these packages.
 
 # Copy VLC plugins (only .so files, preserve directory structure)
 echo "Copying VLC plugins..."

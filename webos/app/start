@@ -1,0 +1,26 @@
+#!/bin/sh
+
+# VLC Player Startup Script for webOS
+APPDIR=/media/cryptofs/apps/usr/palm/applications/org.webosarchive.vlcplayer
+GLIBC=/media/cryptofs/apps/usr/palm/applications/com.nizovn.glibc/lib
+LOG=/media/internal/vlc-start.log
+
+echo "=== VLC Start $(date) ===" >> $LOG
+echo "Running as: $(id)" >> $LOG
+
+# Check if glibc is accessible in the jail
+if [ -f "$GLIBC/ld.so" ]; then
+    echo "glibc ld.so accessible at $GLIBC/ld.so" >> $LOG
+else
+    echo "ERROR: glibc ld.so NOT accessible at $GLIBC/ld.so" >> $LOG
+    echo "Listing /media/cryptofs/apps/usr/palm/applications/:" >> $LOG
+    ls /media/cryptofs/apps/usr/palm/applications/ >> $LOG 2>&1
+fi
+
+# VLC plugin path
+export VLC_PLUGIN_PATH=$APPDIR/plugins/vlc
+echo "VLC_PLUGIN_PATH: $VLC_PLUGIN_PATH" >> $LOG
+
+# Use glibc linker explicitly to bypass the interpreter issue
+echo "Using glibc linker to start binary..." >> $LOG
+exec $GLIBC/ld.so $APPDIR/bin/vlcplayer "$@" 2>> $LOG

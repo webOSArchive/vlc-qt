@@ -91,3 +91,58 @@ git submodule init && git submodule update
 
 - `libvlc-headers/` - libVLC header files
 - `packaging/` - Platform-specific packaging scripts
+
+## webOS Port (webos/ directory)
+
+The `webos/` directory contains a port of VLC-Qt for legacy webOS devices (TouchPad, Pre3).
+
+### Dependencies
+
+The `webos/related-packages/` folder contains all required dependency IPKs:
+- `com.nizovn.qt5` - Qt5 libraries
+- `com.nizovn.glibc` - GNU C Library (compatible with webOS)
+- `com.nizovn.openssl` - OpenSSL libraries
+- `com.nizovn.qt5qpaplugins` - Qt5 platform plugins for webOS
+- `com.nizovn.qt5sdk` - **Critical**: Provides custom jailer and jail_qt5.conf that grants apps access to external package directories
+- `com.nizovn.cacert` - CA certificates
+- `org.webosinternals.dbus` - D-Bus for webOS
+
+These packages must be installed on the device. The `qt5sdk` package is especially important as it modifies the webOS jail system to allow Qt5 apps to access shared libraries.
+
+### webOS App Sandbox (Jail)
+
+webOS runs apps in a sandbox as the `prisoner` user, which restricts access to other app directories. Qt5 apps require access to the `com.nizovn.*` packages.
+
+**Solution**: Add `qt5sdk` section to `appinfo.json`:
+```json
+{
+    "type": "pdk",
+    "main": "start",
+    "qt5sdk": {
+        "exports": [
+            "VLC_PLUGIN_PATH=/media/cryptofs/apps/usr/palm/applications/org.webosarchive.vlcplayer/plugins/vlc"
+        ]
+    }
+}
+```
+
+This tells webOS to use the qt5sdk jail configuration, which mounts the external package directories.
+
+### Reference Implementation
+
+See `~/Projects/qupzilla` for a working Qt5 webOS app example:
+- Uses `qt5sdk` section in appinfo.json
+- Points `main` directly to binary or uses start script
+- Does NOT bundle glibc/Qt5 (uses external packages)
+
+### Build Commands
+
+```bash
+cd webos
+./build-and-package.sh    # Build VLC-Qt for ARM and package IPK
+./package-ipk.sh          # Package only (after building)
+```
+
+### Debugging
+
+Logs are written to `/media/internal/vlc.log` on the device.

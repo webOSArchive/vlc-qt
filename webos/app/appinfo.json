@@ -1,17 +1,17 @@
 {
-    "title": "VLC Player",
-    "id": "org.webosarchive.vlcplayer",
-    "version": "1.0.0",
-    "vendor": "VLC-Qt",
-    "type": "pdk",
-    "main": "vlcplayer.sh",
-    "icon": "icon.png",
-    "uiRevision": 2,
-    "keywords": ["video", "media", "player", "vlc", "music", "movie"],
-    "dependencies": [
-        "com.nizovn.qt5",
-        "com.nizovn.glibc",
-        "com.nizovn.openssl"
-    ],
-    "requiredMemory": 300
+	"title": "VLC Player",
+	"id": "org.webosarchive.vlcplayer",
+	"version": "1.0.0",
+	"vendor": "webOS Archive",
+	"type": "pdk",
+	"main": "bin/vlcplayer",
+	"icon": "icon.png",
+	"keywords": ["video", "media", "player", "vlc", "movie"],
+	"qt5sdk": {
+		"exports": [
+			"QMLSCENE_DEVICE=softwarecontext",
+			"VLC_PLUGIN_PATH=/media/cryptofs/apps/usr/palm/applications/org.webosarchive.vlcplayer/plugins/vlc"
+		]
+	},
+	"requiredMemory": 150
 }
