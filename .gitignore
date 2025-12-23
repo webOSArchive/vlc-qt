@@ -11,3 +11,4 @@ CMakeLists.txt.user*
 
 # Debian/build
 obj*
+webos/package-staging/org.webosarchive.vlcplayer/
