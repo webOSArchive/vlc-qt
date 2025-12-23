@@ -23,3 +23,6 @@ vlc-arm/
 
 # Test scripts in /tmp (shouldn't be here but just in case)
 /tmp/
+
+# Package Staging contents
+webos/package-staging/org.webosarchive.vlcplayer

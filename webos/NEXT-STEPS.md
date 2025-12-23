@@ -16,7 +16,7 @@ vlc-qt/webos/
 │   └── appinfo.json       # webOS app manifest
 ├── build-vlc-qt.sh        # Build VLC-Qt libraries
 ├── build-libvlc.sh        # Build libVLC from source
-└── package.sh             # Create webOS IPK package
+└── package-ipk.sh         # Create webOS IPK package
 ```
 
 ## Key Files
@@ -28,7 +28,7 @@ vlc-qt/webos/
 | `webos/build-vlc-qt.sh` | Script to build VLC-Qt |
 | `webos/build-libvlc.sh` | Script to build libVLC + FFmpeg |
 | `webos/app/*` | Sample Qt5 VLC player app |
-| `webos/package.sh` | Create webOS IPK package |
+| `webos/package-ipk.sh` | Create webOS IPK package |
 
 ---
 
@@ -96,7 +96,7 @@ This builds the sample VLC player application (`vlcplayer`).
 
 ```bash
 cd /home/jonwise/Projects/vlc-qt/webos
-./package.sh
+./package-ipk.sh
 ```
 
 This creates `org.webosarchive.vlcplayer_1.0.0_armv7.ipk` in `package-staging/`.
@@ -118,12 +118,8 @@ Install these packages on the webOS device first (from `webos/related-packages/`
 ### Install VLC Player
 
 ```bash
-# Copy IPK to device
-scp package-staging/org.webosarchive.vlcplayer_1.0.0_armv7.ipk root@<device-ip>:/tmp/
-
-# SSH to device and install
-ssh root@<device-ip>
-luna-send -n 1 palm://com.palm.appinstaller/installNoVerify '{"target":"/tmp/org.webosarchive.vlcplayer_1.0.0_armv7.ipk"}'
+# Install using Palm SDK (device must be connected via USB or novacom)
+/opt/PalmSDK/0.2/bin/palm-install package-staging/org.webosarchive.vlcplayer_1.0.0_all.ipk
 ```
 
 ---
@@ -157,7 +153,7 @@ Common issues:
 Edit these files:
 - `webos/app/appinfo.json` - Change `"id"` field
 - `webos/cmake/webos-arm-toolchain.cmake` - Change `WEBOS_APP_ID`
-- `webos/package.sh` - Change `APP_ID` variable
+- `webos/package-ipk.sh` - Change `APP_ID` variable
 
 ### Add App Icon
 

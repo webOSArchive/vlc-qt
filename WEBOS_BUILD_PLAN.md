@@ -301,8 +301,8 @@ Build VLC-Qt libraries with CMake toolchain
 ### webos/build-app.sh
 Build the VLC player application
 
-### webos/package.sh
-Create webOS IPK package
+### webos/package-ipk.sh
+Create webOS IPK package (requires Palm SDK)
 
 ---
 

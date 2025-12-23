@@ -1,116 +1,170 @@
 #!/bin/bash
-# Package VLC Player for webOS as IPK using Palm SDK
+# webOS IPK Package Creation Script for VLC Player
+# Requires Palm SDK installed at /opt/PalmSDK
 
 set -e
 
+PALM_SDK="/opt/PalmSDK/Current/bin"
+PALM_PACKAGE="${PALM_SDK}/palm-package"
+PALM_INSTALL="${PALM_SDK}/palm-install"
+
+echo "=== VLC Player webOS Package Builder ==="
+echo ""
+
+# Check for Palm SDK
+if [ ! -x "${PALM_PACKAGE}" ]; then
+    echo "ERROR: Palm SDK not found at ${PALM_SDK}"
+    echo "Please install the Palm SDK to /opt/PalmSDK"
+    exit 1
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_ROOT="${SCRIPT_DIR}/.."
+BUILD_DIR="${PROJECT_ROOT}/build-webos"
+STAGING_DIR="${SCRIPT_DIR}/package-staging"
 APP_ID="org.webosarchive.vlcplayer"
 VERSION="1.0.0"
 
-# Source directories
-VLC_ARM="${SCRIPT_DIR}/vlc-arm"
-VLCQT_BUILD="${SCRIPT_DIR}/../build-webos"
+# Paths to built components
+VLCQT_BUILD="${BUILD_DIR}"
+LIBVLC_PATH="${SCRIPT_DIR}/vlc-arm"
 APP_BUILD="${SCRIPT_DIR}/app/build"
 
-# Package staging directory (use package-staging to preserve user resources)
-STAGING_ROOT="${SCRIPT_DIR}/package-staging"
-STAGE_DIR="${STAGING_ROOT}/${APP_ID}"
-OUTPUT_DIR="${SCRIPT_DIR}"
-
-echo "=== Creating webOS Package ==="
-echo ""
-
-# Clean app staging directory (preserve resources folder)
-RESOURCES_BACKUP=""
-if [ -d "${STAGING_ROOT}/resources" ]; then
-    RESOURCES_BACKUP=$(mktemp -d)
-    cp -r "${STAGING_ROOT}/resources" "${RESOURCES_BACKUP}/"
+# Check if VLC-Qt was built
+if [ ! -f "${VLCQT_BUILD}/src/core/libVLCQtCore.so" ]; then
+    echo "ERROR: VLC-Qt not built. Run build-vlc-qt.sh first."
+    exit 1
 fi
 
-rm -rf "${STAGE_DIR}"
-mkdir -p "${STAGE_DIR}/bin"
-mkdir -p "${STAGE_DIR}/lib"
-mkdir -p "${STAGE_DIR}/plugins/vlc"
+# Check if app was built
+if [ ! -f "${APP_BUILD}/vlcplayer" ]; then
+    echo "ERROR: VLC Player app not built."
+    echo "Build with: cd ${SCRIPT_DIR}/app && mkdir build && cd build && cmake .. && make"
+    exit 1
+fi
+
+# Check if libVLC exists
+if [ ! -d "${LIBVLC_PATH}/lib" ]; then
+    echo "ERROR: libVLC not found at ${LIBVLC_PATH}"
+    echo "Run build-libvlc.sh or provide pre-built ARM libVLC."
+    exit 1
+fi
+
+echo "Creating package staging directory..."
+# Preserve user resources folder if it exists
+RESOURCES_BACKUP=""
+if [ -d "${STAGING_DIR}/resources" ]; then
+    RESOURCES_BACKUP=$(mktemp -d)
+    cp -r "${STAGING_DIR}/resources" "${RESOURCES_BACKUP}/"
+fi
+
+rm -rf "${STAGING_DIR}/${APP_ID}"
+mkdir -p "${STAGING_DIR}/${APP_ID}/bin"
+mkdir -p "${STAGING_DIR}/${APP_ID}/lib"
+mkdir -p "${STAGING_DIR}/${APP_ID}/plugins/vlc"
 
 # Restore user resources
 if [ -n "${RESOURCES_BACKUP}" ] && [ -d "${RESOURCES_BACKUP}/resources" ]; then
-    cp -r "${RESOURCES_BACKUP}/resources" "${STAGING_ROOT}/"
+    cp -r "${RESOURCES_BACKUP}/resources" "${STAGING_DIR}/"
     rm -rf "${RESOURCES_BACKUP}"
 fi
 
+# Copy app metadata
+echo "Copying app metadata..."
+cp "${SCRIPT_DIR}/app/appinfo.json" "${STAGING_DIR}/${APP_ID}/"
+echo "2.0" > "${STAGING_DIR}/${APP_ID}/package.properties"
+
+# Copy icon - check multiple locations
+if [ -f "${STAGING_DIR}/resources/icon.png" ]; then
+    echo "Using custom icon from resources folder."
+    cp "${STAGING_DIR}/resources/icon.png" "${STAGING_DIR}/${APP_ID}/"
+elif [ -f "${SCRIPT_DIR}/app/icon.png" ]; then
+    cp "${SCRIPT_DIR}/app/icon.png" "${STAGING_DIR}/${APP_ID}/"
+else
+    echo "Note: No icon.png found. Creating placeholder."
+    echo "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAA2klEQVR42u3bMQ6AIBCF4XcT78C5OIKJxoTE6BG8gLXdFhYWJP5fBQU8hkd4BwAAAAAAAPyPvDhSvfp6+7m+N0kWO95uo5kFoZlNP12lYfT1uQmI1LPTj7mB4J6JiB6PW7/r8l8GQCT6eqvdOG+Xe1UmIH6H8Xed7kJnvz+rTECKoqjXMl0m4K5zWW8CchdJ8zABVZ/Lq05AuiKVZULeZKX9uUxX2Qi4iCR5u12lIpKeZEWeABRFkT4B0U5kNk/ArJcJiFAkaQLmbJaJdJVJOgEI5e+XySQdAAAAAAAA/9kHZDM+RaA3wIIAAAAASUVORK5CYII=" | base64 -d > "${STAGING_DIR}/${APP_ID}/icon.png"
+fi
+
+# Copy main executable
 echo "Copying executable..."
-cp "${APP_BUILD}/vlcplayer" "${STAGE_DIR}/bin/"
-chmod +x "${STAGE_DIR}/bin/vlcplayer"
+cp "${APP_BUILD}/vlcplayer" "${STAGING_DIR}/${APP_ID}/bin/"
+chmod +x "${STAGING_DIR}/${APP_ID}/bin/vlcplayer"
 
+# Copy launcher script
 echo "Copying launcher script..."
-cp "${SCRIPT_DIR}/app/vlcplayer.sh" "${STAGE_DIR}/"
-chmod +x "${STAGE_DIR}/vlcplayer.sh"
+cp "${SCRIPT_DIR}/app/vlcplayer.sh" "${STAGING_DIR}/${APP_ID}/"
+chmod +x "${STAGING_DIR}/${APP_ID}/vlcplayer.sh"
 
+# Copy VLC-Qt libraries (preserve symlinks)
 echo "Copying VLC-Qt libraries..."
-cp -P "${VLCQT_BUILD}/src/core/libVLCQtCore.so"* "${STAGE_DIR}/lib/"
-cp -P "${VLCQT_BUILD}/src/widgets/libVLCQtWidgets.so"* "${STAGE_DIR}/lib/"
+cp -P "${VLCQT_BUILD}/src/core/libVLCQtCore.so"* "${STAGING_DIR}/${APP_ID}/lib/" 2>/dev/null || true
+cp -P "${VLCQT_BUILD}/src/widgets/libVLCQtWidgets.so"* "${STAGING_DIR}/${APP_ID}/lib/" 2>/dev/null || true
 
+# Copy libVLC libraries (preserve symlinks)
 echo "Copying libVLC libraries..."
-cp -P "${VLC_ARM}/lib/libvlc.so"* "${STAGE_DIR}/lib/"
-cp -P "${VLC_ARM}/lib/libvlccore.so"* "${STAGE_DIR}/lib/"
+cp -P "${LIBVLC_PATH}/lib/libvlc.so"* "${STAGING_DIR}/${APP_ID}/lib/"
+cp -P "${LIBVLC_PATH}/lib/libvlccore.so"* "${STAGING_DIR}/${APP_ID}/lib/"
 
 # Copy FFmpeg libraries needed by VLC
 echo "Copying FFmpeg libraries..."
 for lib in libavcodec libavformat libavutil libswscale libswresample libpostproc; do
-    if ls "${VLC_ARM}/lib/${lib}.so"* 1>/dev/null 2>&1; then
-        cp -P "${VLC_ARM}/lib/${lib}.so"* "${STAGE_DIR}/lib/"
+    if ls "${LIBVLC_PATH}/lib/${lib}.so"* 1>/dev/null 2>&1; then
+        cp -P "${LIBVLC_PATH}/lib/${lib}.so"* "${STAGING_DIR}/${APP_ID}/lib/"
     fi
 done
 
+# Copy VLC plugins (only .so files, preserve directory structure)
 echo "Copying VLC plugins..."
-# Copy plugins preserving directory structure (only .so files)
-if [ -d "${VLC_ARM}/lib/vlc/plugins" ]; then
-    cd "${VLC_ARM}/lib/vlc/plugins"
+if [ -d "${LIBVLC_PATH}/lib/vlc/plugins" ]; then
+    cd "${LIBVLC_PATH}/lib/vlc/plugins"
     find . -name "*.so" | while read plugin; do
         plugin_dir=$(dirname "$plugin")
-        mkdir -p "${STAGE_DIR}/plugins/vlc/${plugin_dir}"
-        cp "$plugin" "${STAGE_DIR}/plugins/vlc/${plugin_dir}/"
+        mkdir -p "${STAGING_DIR}/${APP_ID}/plugins/vlc/${plugin_dir}"
+        cp "$plugin" "${STAGING_DIR}/${APP_ID}/plugins/vlc/${plugin_dir}/"
     done
     cd - > /dev/null
+elif [ -d "${LIBVLC_PATH}/plugins" ]; then
+    cd "${LIBVLC_PATH}/plugins"
+    find . -name "*.so" | while read plugin; do
+        plugin_dir=$(dirname "$plugin")
+        mkdir -p "${STAGING_DIR}/${APP_ID}/plugins/vlc/${plugin_dir}"
+        cp "$plugin" "${STAGING_DIR}/${APP_ID}/plugins/vlc/${plugin_dir}/"
+    done
+    cd - > /dev/null
+else
+    echo "WARNING: VLC plugins directory not found!"
 fi
 
-echo "Copying appinfo.json..."
-cp "${SCRIPT_DIR}/app/appinfo.json" "${STAGE_DIR}/"
-
-# Copy icon - check multiple locations
-echo "Copying icon..."
-if [ -f "${STAGING_ROOT}/resources/icon.png" ]; then
-    echo "Using custom icon from resources folder."
-    cp "${STAGING_ROOT}/resources/icon.png" "${STAGE_DIR}/"
-elif [ -f "${SCRIPT_DIR}/app/icon.png" ]; then
-    cp "${SCRIPT_DIR}/app/icon.png" "${STAGE_DIR}/"
+# Strip binaries to reduce size
+echo "Stripping binaries..."
+STRIP="/opt/gcc-linaro-4.9.4-2017.01-x86_64_arm-linux-gnueabi/bin/arm-linux-gnueabi-strip"
+if [ -f "${STRIP}" ]; then
+    find "${STAGING_DIR}/${APP_ID}" -name "*.so*" -type f -exec ${STRIP} --strip-unneeded {} \; 2>/dev/null || true
+    ${STRIP} "${STAGING_DIR}/${APP_ID}/bin/vlcplayer" 2>/dev/null || true
 else
-    echo "Creating placeholder icon..."
-    # Use base64 encoded minimal 64x64 PNG
-    echo "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAA2klEQVR42u3bMQ6AIBCF4XcT78C5OIKJxoTE6BG8gLXdFhYWJP5fBQU8hkd4BwAAAAAAAPyPvDhSvfp6+7m+N0kWO95uo5kFoZlNP12lYfT1uQmI1LPTj7mB4J6JiB6PW7/r8l8GQCT6eqvdOG+Xe1UmIH6H8Xed7kJnvz+rTECKoqjXMl0m4K5zWW8CchdJ8zABVZ/Lq05AuiKVZULeZKX9uUxX2Qi4iCR5u12lIpKeZEWeABRFkT4B0U5kNk/ArJcJiFAkaQLmbJaJdJVJOgEI5e+XySQdAAAAAAAA/9kHZDM+RaA3wIIAAAAASUVORK5CYII=" | base64 -d > "${STAGE_DIR}/icon.png"
+    echo "WARNING: Strip tool not found. Package will be larger."
 fi
 
 echo ""
 echo "Package contents:"
-find "${STAGE_DIR}" -type f | wc -l
+find "${STAGING_DIR}/${APP_ID}" -type f | wc -l
 echo "files in staging directory"
 echo ""
-echo "Library files:"
-ls -la "${STAGE_DIR}/lib/"*.so* 2>/dev/null | head -10
-echo ""
 
-echo "Creating IPK package with palm-package..."
-cd "${OUTPUT_DIR}"
-
-# Use palm-package to create the IPK
-/opt/PalmSDK/0.2/bin/palm-package -o "${OUTPUT_DIR}" "${STAGE_DIR}"
+# Create IPK package using Palm SDK
+echo "Creating IPK package..."
+cd "${STAGING_DIR}"
+"${PALM_PACKAGE}" -o "${STAGING_DIR}" "${APP_ID}"
 
 echo ""
-echo "=== Package Created ==="
+echo "=== Package Complete ==="
 echo ""
-ls -lh "${OUTPUT_DIR}/${APP_ID}"*.ipk 2>/dev/null || echo "IPK not found!"
+ls -lh "${STAGING_DIR}/${APP_ID}"*.ipk 2>/dev/null || echo "IPK not found!"
 echo ""
-echo "To install on device:"
-echo "  scp ${OUTPUT_DIR}/${APP_ID}_${VERSION}_all.ipk root@touchpad:/tmp/"
-echo "  ssh root@touchpad 'ipkg install /tmp/${APP_ID}_${VERSION}_all.ipk'"
+echo "To install on webOS device:"
+echo "  ${PALM_INSTALL} ${STAGING_DIR}/${APP_ID}_${VERSION}_all.ipk"
 echo ""
+echo "Dependencies required on device:"
+echo "  - com.nizovn.qt5"
+echo "  - com.nizovn.glibc"
+echo "  - com.nizovn.openssl"
