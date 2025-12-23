@@ -41,6 +41,14 @@ private slots:
     void hideForPlayback();
     void showForUI();
     void onVideoTapped();
+    void onVlcError();
+    void onVlcVout(int count);
+    void onVlcOpening();
+    void onVlcPlaying();
+    void onVlcPaused();
+    void onVlcStopped();
+    void onVlcEnd();
+    void onVlcBuffering(int percent);
 
 private:
     void setupUI();

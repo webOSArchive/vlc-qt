@@ -43,8 +43,13 @@ static void logMsg(const char *fmt, ...) {
 
 #include "MediaPlayer.h"
 
-// Scale factor for reduced resolution
-#define VIDEO_SCALE_FACTOR 2
+// Scale factors for reduced resolution based on source size
+// 480p and below: scale by 2 (~240x180)
+// 720p: scale by 5 (~256x144)
+// 1080p+: scale by 8 (~240x135)
+#define VIDEO_SCALE_FACTOR_SD 2
+#define VIDEO_SCALE_FACTOR_HD 5
+#define VIDEO_SCALE_FACTOR_FHD 8
 
 FBVideoWidget::FBVideoWidget(QWidget *parent)
     : QWidget(parent),
@@ -453,15 +458,32 @@ unsigned FBVideoWidget::formatCallback(void **opaque, char *chroma,
     FBVideoWidget *self = static_cast<FBVideoWidget*>(*opaque);
 
     logMsg( "FBVideoWidget::formatCallback %ux%u incoming chroma=%.4s\n", *width, *height, chroma);
-    
+
     // Request BGRA format
     memcpy(chroma, "BGRA", 4);
 
-    // Scale down resolution
-    unsigned scaledWidth = *width / VIDEO_SCALE_FACTOR;
-    unsigned scaledHeight = *height / VIDEO_SCALE_FACTOR;
+    // Choose scale factor based on source resolution
+    // Higher resolution = more aggressive scaling to maintain performance
+    unsigned sourceHeight = *height;
+    unsigned scaleFactor;
+    if (sourceHeight > 900) {
+        scaleFactor = VIDEO_SCALE_FACTOR_FHD;  // 1080p+ -> /6
+    } else if (sourceHeight > 600) {
+        scaleFactor = VIDEO_SCALE_FACTOR_HD;   // 720p -> /4
+    } else {
+        scaleFactor = VIDEO_SCALE_FACTOR_SD;   // 480p and below -> /2
+    }
+
+    unsigned scaledWidth = *width / scaleFactor;
+    unsigned scaledHeight = *height / scaleFactor;
+
+    // Ensure dimensions are even (required for many codecs)
     scaledWidth = (scaledWidth / 2) * 2;
     scaledHeight = (scaledHeight / 2) * 2;
+
+    // Minimum size to avoid degenerate cases
+    if (scaledWidth < 160) scaledWidth = 160;
+    if (scaledHeight < 90) scaledHeight = 90;
 
     *width = scaledWidth;
     *height = scaledHeight;
@@ -482,8 +504,8 @@ unsigned FBVideoWidget::formatCallback(void **opaque, char *chroma,
 
     self->updateRenderPosition();
 
-    logMsg("FBVideoWidget: Requested BGRA at %ux%u (1/%d), buffer=%u bytes\n",
-           scaledWidth, scaledHeight, VIDEO_SCALE_FACTOR, bufferSize);
+    logMsg("FBVideoWidget: Requested BGRA at %ux%u (1/%d for %up), buffer=%u bytes\n",
+           scaledWidth, scaledHeight, scaleFactor, sourceHeight, bufferSize);
 
     // WORKAROUND: Force a micro-seek to kick-start frame delivery
     // This needs to happen after format is negotiated

@@ -85,6 +85,24 @@ void MainWindow::setupVLC()
     args << "--no-snapshot-preview"; // No snapshot preview
     args << "--no-osd";              // No on-screen display
 
+    // Force FFmpeg software decoding - hardware decoders (omxil) fail silently
+    // on many video formats, outputting NV12 but not actually decoding frames
+    args << "--codec=avcodec,none";  // Use FFmpeg avcodec only
+    args << "--avcodec-hw=none";     // Disable hardware acceleration
+    args << "--avcodec-threads=2";   // Limit threads on slow ARM device
+
+    // Decoder optimizations for slow ARM CPU
+    args << "--avcodec-skiploopfilter=4";  // Skip deblocking filter (all frames)
+    args << "--avcodec-skip-idct=4";       // Skip IDCT on all frames (faster, lower quality)
+    args << "--avcodec-skip-frame=1";      // Skip non-reference frames when behind
+    args << "--avcodec-fast";              // Fast decoding mode
+    args << "--avcodec-dr";                // Direct rendering (less copying)
+    args << "--sout-avcodec-hurry-up";     // Allow skipping when behind
+
+    // Clock/sync adjustments for smoother playback on slow devices
+    args << "--clock-jitter=100";          // Allow more timing jitter
+    args << "--clock-synchro=0";           // Disable strict sync (smoother on slow CPU)
+
     m_instance = new VlcInstance(args, this);
     m_player = new VlcMediaPlayer(m_instance);
 }
@@ -203,8 +221,17 @@ void MainWindow::setupConnections()
     });
     connect(m_volumeSlider, &QSlider::valueChanged, this, &MainWindow::onVolumeChanged);
 
-    // VLC connections
+    // VLC connections - detailed logging for debugging
     connect(m_player, &VlcMediaPlayer::stateChanged, this, &MainWindow::updateState);
+    connect(m_player, &VlcMediaPlayer::error, this, &MainWindow::onVlcError);
+    connect(m_player, &VlcMediaPlayer::vout, this, &MainWindow::onVlcVout);
+    connect(m_player, &VlcMediaPlayer::opening, this, &MainWindow::onVlcOpening);
+    connect(m_player, &VlcMediaPlayer::playing, this, &MainWindow::onVlcPlaying);
+    connect(m_player, &VlcMediaPlayer::paused, this, &MainWindow::onVlcPaused);
+    connect(m_player, &VlcMediaPlayer::stopped, this, &MainWindow::onVlcStopped);
+    connect(m_player, &VlcMediaPlayer::end, this, &MainWindow::onVlcEnd);
+    connect(m_player, static_cast<void(VlcMediaPlayer::*)(int)>(&VlcMediaPlayer::buffering),
+            this, &MainWindow::onVlcBuffering);
 
     // FBVideoWidget playback state connections - hide/show UI based on playback
     if (m_fbVideoWidget) {
@@ -388,4 +415,46 @@ QString MainWindow::formatTime(int ms) const
     return QString("%1:%2")
         .arg(minutes, 2, 10, QChar('0'))
         .arg(seconds, 2, 10, QChar('0'));
+}
+
+void MainWindow::onVlcError()
+{
+    logMsg("*** VLC ERROR: Playback error occurred ***\n");
+}
+
+void MainWindow::onVlcVout(int count)
+{
+    logMsg("VLC vout: video outputs available = %d\n", count);
+}
+
+void MainWindow::onVlcOpening()
+{
+    logMsg("VLC signal: opening\n");
+}
+
+void MainWindow::onVlcPlaying()
+{
+    logMsg("VLC signal: playing\n");
+}
+
+void MainWindow::onVlcPaused()
+{
+    logMsg("VLC signal: paused\n");
+}
+
+void MainWindow::onVlcStopped()
+{
+    logMsg("VLC signal: stopped\n");
+}
+
+void MainWindow::onVlcEnd()
+{
+    logMsg("VLC signal: end reached\n");
+}
+
+void MainWindow::onVlcBuffering(int percent)
+{
+    if (percent == 0 || percent == 100 || percent % 25 == 0) {
+        logMsg("VLC buffering: %d%%\n", percent);
+    }
 }
