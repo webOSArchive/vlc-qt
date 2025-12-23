@@ -51,6 +51,10 @@ static void logMsg(const char *fmt, ...) {
 #define VIDEO_SCALE_FACTOR_HD 5
 #define VIDEO_SCALE_FACTOR_FHD 8
 
+// Set to 1 to use I420 with our own YUV->RGB conversion
+// Set to 0 to use BGRA from VLC's swscale (faster - swscale is NEON optimized)
+#define USE_I420_CONVERSION 0
+
 FBVideoWidget::FBVideoWidget(QWidget *parent)
     : QWidget(parent),
       m_player(nullptr),
@@ -58,7 +62,10 @@ FBVideoWidget::FBVideoWidget(QWidget *parent)
       m_readBuffer(1),
       m_videoWidth(0),
       m_videoHeight(0),
+      m_videoPitchY(0),
+      m_videoPitchUV(0),
       m_hasFrame(false),
+      m_useI420(USE_I420_CONVERSION),
       m_fbFd(-1),
       m_fbMem(nullptr),
       m_fbSize(0),
@@ -240,6 +247,11 @@ void FBVideoWidget::clearVideoRegion()
     memset(m_fbMem, 0, m_fbSize);
 }
 
+// Inline clamp for YUV->RGB conversion
+static inline int clamp255(int v) {
+    return (v < 0) ? 0 : ((v > 255) ? 255 : v);
+}
+
 void FBVideoWidget::renderToFramebuffer()
 {
     static int renderCount = 0;
@@ -270,8 +282,9 @@ void FBVideoWidget::renderToFramebuffer()
 
     renderCount++;
     if (renderCount <= 10 || renderCount % 100 == 0) {
-        logMsg("FBVideoWidget: renderToFB #%d, video %ux%u -> FB %ux%u (yoff=%u)\n",
-               renderCount, m_videoWidth, m_videoHeight, m_fbWidth, m_fbHeight, pageYOffset);
+        logMsg("FBVideoWidget: renderToFB #%d, video %ux%u -> FB %ux%u (yoff=%u) %s\n",
+               renderCount, m_videoWidth, m_videoHeight, m_fbWidth, m_fbHeight, pageYOffset,
+               m_useI420 ? "I420" : "BGRA");
     }
 
     m_mutex.lock();
@@ -279,7 +292,6 @@ void FBVideoWidget::renderToFramebuffer()
     const unsigned char *src = reinterpret_cast<const unsigned char*>(m_buffer[m_readBuffer].constData());
     unsigned srcWidth = m_videoWidth;
     unsigned srcHeight = m_videoHeight;
-    unsigned srcStride = srcWidth * 4;
 
     // Calculate aspect-correct target rectangle (fullscreen)
     float videoAspect = (float)srcWidth / (float)srcHeight;
@@ -309,21 +321,70 @@ void FBVideoWidget::renderToFramebuffer()
     int pageTop = pageYOffset;
     int pageBottom = pageYOffset + m_fbHeight;
 
-    // Render directly to framebuffer with nearest-neighbor scaling
-    for (int y = 0; y < targetH; y++) {
-        int fbY = targetY + y;
-        if (fbY < pageTop || fbY >= pageBottom) continue;
+    if (m_useI420) {
+        // I420 format: Y plane, then U plane (1/4 size), then V plane (1/4 size)
+        const unsigned char *planeY = src;
+        const unsigned char *planeU = src + m_videoPitchY * srcHeight;
+        const unsigned char *planeV = planeU + m_videoPitchUV * (srcHeight / 2);
 
-        unsigned int *dstRow = (unsigned int *)(m_fbMem + fbY * m_fbStride + targetX * 4);
-        int srcY = (y * scaleY_fp) >> 16;
-        if (srcY >= (int)srcHeight) srcY = srcHeight - 1;
-        const unsigned int *srcRow = (const unsigned int *)(src + srcY * srcStride);
+        // Render with YUV->RGB conversion and scaling
+        for (int y = 0; y < targetH; y++) {
+            int fbY = targetY + y;
+            if (fbY < pageTop || fbY >= pageBottom) continue;
 
-        unsigned int srcX_fp = 0;
-        for (int x = 0; x < targetW; x++) {
-            int srcX = srcX_fp >> 16;
-            dstRow[x] = srcRow[srcX];
-            srcX_fp += scaleX_fp;
+            unsigned int *dstRow = (unsigned int *)(m_fbMem + fbY * m_fbStride + targetX * 4);
+            int srcY = (y * scaleY_fp) >> 16;
+            if (srcY >= (int)srcHeight) srcY = srcHeight - 1;
+
+            const unsigned char *yRow = planeY + srcY * m_videoPitchY;
+            const unsigned char *uRow = planeU + (srcY / 2) * m_videoPitchUV;
+            const unsigned char *vRow = planeV + (srcY / 2) * m_videoPitchUV;
+
+            unsigned int srcX_fp = 0;
+            for (int x = 0; x < targetW; x++) {
+                int srcX = srcX_fp >> 16;
+
+                // Get YUV values (U and V are subsampled 2x2)
+                int Y = yRow[srcX];
+                int U = uRow[srcX / 2];
+                int V = vRow[srcX / 2];
+
+                // Fast YUV to RGB conversion (BT.601)
+                // R = Y + 1.402*(V-128)
+                // G = Y - 0.344*(U-128) - 0.714*(V-128)
+                // B = Y + 1.772*(U-128)
+                int C = Y;
+                int D = U - 128;
+                int E = V - 128;
+
+                int R = clamp255(C + ((359 * E) >> 8));
+                int G = clamp255(C - ((88 * D + 183 * E) >> 8));
+                int B = clamp255(C + ((454 * D) >> 8));
+
+                // BGRA format for framebuffer
+                dstRow[x] = (0xFF << 24) | (R << 16) | (G << 8) | B;
+                srcX_fp += scaleX_fp;
+            }
+        }
+    } else {
+        // BGRA format from VLC's swscale
+        unsigned srcStride = srcWidth * 4;
+
+        for (int y = 0; y < targetH; y++) {
+            int fbY = targetY + y;
+            if (fbY < pageTop || fbY >= pageBottom) continue;
+
+            unsigned int *dstRow = (unsigned int *)(m_fbMem + fbY * m_fbStride + targetX * 4);
+            int srcY = (y * scaleY_fp) >> 16;
+            if (srcY >= (int)srcHeight) srcY = srcHeight - 1;
+            const unsigned int *srcRow = (const unsigned int *)(src + srcY * srcStride);
+
+            unsigned int srcX_fp = 0;
+            for (int x = 0; x < targetW; x++) {
+                int srcX = srcX_fp >> 16;
+                dstRow[x] = srcRow[srcX];
+                srcX_fp += scaleX_fp;
+            }
         }
     }
 
@@ -422,7 +483,21 @@ void FBVideoWidget::onPlaybackStopped()
 void *FBVideoWidget::lockCallback(void *opaque, void **planes)
 {
     FBVideoWidget *self = static_cast<FBVideoWidget*>(opaque);
-    planes[0] = self->m_buffer[self->m_writeBuffer].data();
+    unsigned char *buffer = reinterpret_cast<unsigned char*>(self->m_buffer[self->m_writeBuffer].data());
+
+    if (self->m_useI420) {
+        // I420: 3 planes - Y, then U, then V
+        unsigned ySize = self->m_videoPitchY * self->m_videoHeight;
+        unsigned uvSize = self->m_videoPitchUV * (self->m_videoHeight / 2);
+
+        planes[0] = buffer;                      // Y plane
+        planes[1] = buffer + ySize;              // U plane
+        planes[2] = buffer + ySize + uvSize;     // V plane
+    } else {
+        // BGRA: single plane
+        planes[0] = buffer;
+    }
+
     return nullptr;
 }
 
@@ -459,17 +534,14 @@ unsigned FBVideoWidget::formatCallback(void **opaque, char *chroma,
 
     logMsg( "FBVideoWidget::formatCallback %ux%u incoming chroma=%.4s\n", *width, *height, chroma);
 
-    // Request BGRA format
-    memcpy(chroma, "BGRA", 4);
-
     // Choose scale factor based on source resolution
     // Higher resolution = more aggressive scaling to maintain performance
     unsigned sourceHeight = *height;
     unsigned scaleFactor;
     if (sourceHeight > 900) {
-        scaleFactor = VIDEO_SCALE_FACTOR_FHD;  // 1080p+ -> /6
+        scaleFactor = VIDEO_SCALE_FACTOR_FHD;  // 1080p+ -> /8
     } else if (sourceHeight > 600) {
-        scaleFactor = VIDEO_SCALE_FACTOR_HD;   // 720p -> /4
+        scaleFactor = VIDEO_SCALE_FACTOR_HD;   // 720p -> /5
     } else {
         scaleFactor = VIDEO_SCALE_FACTOR_SD;   // 480p and below -> /2
     }
@@ -477,7 +549,7 @@ unsigned FBVideoWidget::formatCallback(void **opaque, char *chroma,
     unsigned scaledWidth = *width / scaleFactor;
     unsigned scaledHeight = *height / scaleFactor;
 
-    // Ensure dimensions are even (required for many codecs)
+    // Ensure dimensions are even (required for YUV formats)
     scaledWidth = (scaledWidth / 2) * 2;
     scaledHeight = (scaledHeight / 2) * 2;
 
@@ -491,10 +563,46 @@ unsigned FBVideoWidget::formatCallback(void **opaque, char *chroma,
     self->m_videoWidth = scaledWidth;
     self->m_videoHeight = scaledHeight;
 
-    *pitches = scaledWidth * 4;
-    *lines = scaledHeight;
+    unsigned bufferSize;
 
-    unsigned bufferSize = (*pitches) * (*lines);
+    if (self->m_useI420) {
+        // Request I420 format (YUV 4:2:0 planar)
+        // This avoids VLC's swscale overhead - we do YUV->RGB ourselves
+        memcpy(chroma, "I420", 4);
+
+        // I420 has 3 planes: Y (full res), U (1/4), V (1/4)
+        self->m_videoPitchY = scaledWidth;
+        self->m_videoPitchUV = scaledWidth / 2;
+
+        pitches[0] = self->m_videoPitchY;   // Y plane pitch
+        pitches[1] = self->m_videoPitchUV;  // U plane pitch
+        pitches[2] = self->m_videoPitchUV;  // V plane pitch
+
+        lines[0] = scaledHeight;            // Y plane lines
+        lines[1] = scaledHeight / 2;        // U plane lines
+        lines[2] = scaledHeight / 2;        // V plane lines
+
+        // Total buffer: Y + U + V = w*h + w*h/4 + w*h/4 = w*h*1.5
+        bufferSize = scaledWidth * scaledHeight * 3 / 2;
+
+        logMsg("FBVideoWidget: Requested I420 at %ux%u (1/%d for %up), buffer=%u bytes\n",
+               scaledWidth, scaledHeight, scaleFactor, sourceHeight, bufferSize);
+    } else {
+        // Request BGRA format (VLC does YUV->RGB via swscale)
+        memcpy(chroma, "BGRA", 4);
+
+        self->m_videoPitchY = scaledWidth * 4;
+        self->m_videoPitchUV = 0;
+
+        pitches[0] = scaledWidth * 4;
+        lines[0] = scaledHeight;
+
+        bufferSize = pitches[0] * lines[0];
+
+        logMsg("FBVideoWidget: Requested BGRA at %ux%u (1/%d for %up), buffer=%u bytes\n",
+               scaledWidth, scaledHeight, scaleFactor, sourceHeight, bufferSize);
+    }
+
     self->m_buffer[0].resize(bufferSize);
     self->m_buffer[0].fill(0);
     self->m_buffer[1].resize(bufferSize);
@@ -503,9 +611,6 @@ unsigned FBVideoWidget::formatCallback(void **opaque, char *chroma,
     self->m_readBuffer = 1;
 
     self->updateRenderPosition();
-
-    logMsg("FBVideoWidget: Requested BGRA at %ux%u (1/%d for %up), buffer=%u bytes\n",
-           scaledWidth, scaledHeight, scaleFactor, sourceHeight, bufferSize);
 
     // WORKAROUND: Force a micro-seek to kick-start frame delivery
     // This needs to happen after format is negotiated

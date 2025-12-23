@@ -65,13 +65,16 @@ private:
     VlcMediaPlayer *m_player;
     QMutex m_mutex;
 
-    // Double buffering for VLC frames
+    // Double buffering for VLC frames (I420 format: Y, U, V planes)
     QByteArray m_buffer[2];
     int m_writeBuffer;
     int m_readBuffer;
     unsigned m_videoWidth;
     unsigned m_videoHeight;
+    unsigned m_videoPitchY;   // Pitch for Y plane
+    unsigned m_videoPitchUV;  // Pitch for U and V planes
     bool m_hasFrame;
+    bool m_useI420;           // True = I420 with our YUV->RGB, False = BGRA from VLC
 
     // Framebuffer
     int m_fbFd;
