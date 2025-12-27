@@ -16,6 +16,7 @@ class VlcInstance;
 class VlcMedia;
 class VlcMediaPlayer;
 class FBVideoWidget;
+class TranscodeDialog;
 
 class MainWindow : public QMainWindow
 {
@@ -54,6 +55,7 @@ private:
     void setupUI();
     void setupVLC();
     void setupConnections();
+    void playFile(const QString &path);  // Actually start playback
     QString formatTime(int ms) const;
 
     // VLC components

@@ -90,6 +90,17 @@ echo "Copying executable..."
 cp "${APP_BUILD}/vlcplayer" "${STAGING_DIR}/${APP_ID}/bin/"
 chmod +x "${STAGING_DIR}/${APP_ID}/bin/vlcplayer"
 
+# Copy ffmpeg tools (for video probing and transcoding)
+echo "Copying ffmpeg tools..."
+if [ -f "${LIBVLC_PATH}/bin/ffmpeg" ]; then
+    cp "${LIBVLC_PATH}/bin/ffmpeg" "${STAGING_DIR}/${APP_ID}/bin/"
+    chmod +x "${STAGING_DIR}/${APP_ID}/bin/ffmpeg"
+fi
+if [ -f "${LIBVLC_PATH}/bin/ffprobe" ]; then
+    cp "${LIBVLC_PATH}/bin/ffprobe" "${STAGING_DIR}/${APP_ID}/bin/"
+    chmod +x "${STAGING_DIR}/${APP_ID}/bin/ffprobe"
+fi
+
 # Copy launcher script
 echo "Copying launcher script..."
 cp "${SCRIPT_DIR}/app/start" "${STAGING_DIR}/${APP_ID}/"
@@ -105,9 +116,9 @@ echo "Copying libVLC libraries..."
 cp -P "${LIBVLC_PATH}/lib/libvlc.so"* "${STAGING_DIR}/${APP_ID}/lib/"
 cp -P "${LIBVLC_PATH}/lib/libvlccore.so"* "${STAGING_DIR}/${APP_ID}/lib/"
 
-# Copy FFmpeg libraries needed by VLC
+# Copy FFmpeg libraries needed by VLC and ffmpeg/ffprobe tools
 echo "Copying FFmpeg libraries..."
-for lib in libavcodec libavformat libavutil libswscale libswresample libpostproc; do
+for lib in libavcodec libavformat libavutil libswscale libswresample libpostproc libavdevice libavfilter; do
     if ls "${LIBVLC_PATH}/lib/${lib}.so"* 1>/dev/null 2>&1; then
         cp -P "${LIBVLC_PATH}/lib/${lib}.so"* "${STAGING_DIR}/${APP_ID}/lib/"
     fi

@@ -60,6 +60,12 @@ set(SOURCES
     FBVideoWidget.h
     GLESVideoWidget.cpp
     GLESVideoWidget.h
+    VideoProber.cpp
+    VideoProber.h
+    Transcoder.cpp
+    Transcoder.h
+    TranscodeDialog.cpp
+    TranscodeDialog.h
 )
 
 # Build executable
