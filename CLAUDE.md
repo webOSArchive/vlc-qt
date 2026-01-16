@@ -244,17 +244,37 @@ if (fbY < pageTop || fbY >= pageBottom) continue;
 
 Writing to the wrong page results in invisible output or flickering as the display hardware cycles through pages.
 
-### Qt UI vs Direct Framebuffer Rendering
+### SDL + OpenGL ES Rendering (DOES NOT WORK WITH Qt)
+
+**Background**: PCSX-ReARMed solved webOS touch flicker by using SDL's built-in OpenGL support instead of direct EGL or framebuffer access. SDL properly integrates with webOS's 3-layer display system.
+
+**Why It Doesn't Work Here**: SDL video mode and Qt **cannot coexist** on webOS. Both try to create EGL contexts and own the display. When SDL_SetVideoMode() is called (even before QApplication), it conflicts with Qt's display initialization.
+
+**Attempts that failed**:
+- Initializing SDL before Qt - conflicts with Qt's EGL context creation
+- Initializing PDL only (no SDL video) - no improvement to flicker
+- Using SDL software surface instead of SDL_OPENGL - still conflicts
+- Linking SDL/GLES_CM libraries - causes linker crashes in webOS jail
+
+**The PCSX-ReARMed solution only works because it doesn't use Qt at all** - it uses SDL for everything (display, input, audio). For a Qt-based app, this approach is not viable without completely abandoning Qt's windowing system.
+
+### Qt UI vs Direct Framebuffer Rendering (Current Approach)
+
+**Known Issue**: The framebuffer approach has **unavoidable flicker** due to conflicts between Qt's rendering and direct /dev/fb0 writes. This is a fundamental limitation when combining Qt with direct framebuffer access on webOS.
 
 When bypassing Qt to render video directly to `/dev/fb0`, there's a **layer conflict** between Qt's rendering and framebuffer writes. Qt and the video both fight for the same framebuffer, causing flickering.
 
-**Failed approaches**:
+**Failed approaches** (all still result in flicker):
 - `Qt::WA_PaintOnScreen` - Still conflicts
 - `Qt::WA_OpaquePaintEvent` + `Qt::WA_NoSystemBackground` - Helps but insufficient
 - Timer-based re-rendering - Just makes flickering faster
 - Event filters to intercept Qt paint events - Too complex, still flickers
+- Rendering to all 3 framebuffer pages simultaneously - No improvement
+- FBIO_WAITFORVSYNC before writes - No improvement
+- Hiding video widget completely during playback - No improvement
+- PDL_Init() before Qt - No improvement to flicker
 
-**Working solution**: Complete layer separation by hiding Qt during playback:
+**Workaround (FBVideoWidget)**: Complete layer separation by hiding Qt during playback:
 
 1. **During video playback**: Hide all Qt UI widgets (title bar, controls). Only keep the video widget visible (to capture touch events). Render video fullscreen directly to framebuffer.
 
@@ -345,6 +365,20 @@ static void logMsg(const char *fmt, ...) {
 
 Log file location: `/media/internal/vlcplayer.log` (persists across app restarts, accessible via USB)
 
+### Video Render Modes
+
+The webOS app supports multiple video rendering backends, selectable via `VIDEO_RENDER_MODE` in `MainWindow.cpp`:
+
+| Mode | Class | Description | Status |
+|------|-------|-------------|--------|
+| 0 | VideoWidget | Software QPainter rendering | Works, slow |
+| 1 | GLVideoWidget | Qt OpenGL | Crashes on TouchPad |
+| 2 | FBVideoWidget | Direct framebuffer | Works, layer conflicts |
+| 3 | GLESVideoWidget | EGL + GLES2 | Fast, touch flicker |
+| **4** | **SDLVideoWidget** | **SDL + GLES** | **RECOMMENDED** |
+
+**Current default**: Mode 4 (SDLVideoWidget) - No touch flicker, hardware-accelerated display.
+
 ### Future Optimizations
 
 **ARM NEON YUV→RGB conversion**: Currently using VLC's swscale for I420→BGRA conversion, which is NEON-optimized and fast. We experimented with requesting I420 output and doing our own YUV→RGB conversion in C, but it was slower than swscale.
@@ -358,3 +392,25 @@ The I420 code path exists in `FBVideoWidget.cpp` (`USE_I420_CONVERSION` flag) bu
 1. Set `USE_I420_CONVERSION=1`
 2. Replace the scalar loop in `renderToFramebuffer()` with NEON intrinsics or inline assembly
 3. Key NEON operations needed: `vld1_u8` (load), `vmull_u8` (multiply), `vqadd_s16` (saturating add), `vqmovun_s16` (narrow with saturation)
+
+### Hardware Video Decoding (OMX) - Does Not Work
+
+The HP TouchPad has Qualcomm OMX libraries for hardware video decoding:
+- `/usr/lib/libOmxCore.so` - OMX core
+- `/usr/lib/libOmxVdec.so` - Video decoder (H.264, etc.)
+
+VLC's `omxil` plugin is built and can find these libraries. However, **OMX decoding does not work properly**:
+
+**Symptoms when enabling OMX** (`--codec=omxil,avcodec`):
+- Video plays at ~1 frame per 15-20 seconds
+- Same behavior with both `vmem` and `fb` video outputs
+- Likely cause: format mismatch or missing OMX component registration
+
+**Possible issues**:
+1. TouchPad's OMX components may use non-standard naming (VLC looks for standard OMX IL component names)
+2. Output format (likely NV12/YUV420SemiPlanar) may not be handled correctly
+3. The OMX components may require specific initialization that VLC doesn't perform
+
+**GStreamer alternative**: The device has GStreamer 0.10 installed (`/usr/lib/gstreamer-0.10/`) which the system video player likely uses. However, integrating GStreamer with VLC-Qt would require significant work.
+
+**Current status**: Software decoding via FFmpeg avcodec is used. Hardware decoding remains a potential future optimization but would require deeper investigation into the TouchPad's OMX implementation.

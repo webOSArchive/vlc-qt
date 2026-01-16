@@ -16,6 +16,7 @@ class VlcInstance;
 class VlcMedia;
 class VlcMediaPlayer;
 class FBVideoWidget;
+class SDLVideoWidget;
 
 class MainWindow : public QMainWindow
 {
@@ -63,7 +64,8 @@ private:
 
     // UI components
     QWidget *m_videoWidget;
-    FBVideoWidget *m_fbVideoWidget;  // For FB mode state connections
+    FBVideoWidget *m_fbVideoWidget;    // For FB mode state connections
+    SDLVideoWidget *m_sdlVideoWidget;  // For SDL mode state connections
     QWidget *m_controlsWidget;
     QPushButton *m_playButton;
     QPushButton *m_stopButton;

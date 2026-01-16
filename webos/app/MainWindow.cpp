@@ -38,12 +38,14 @@ static void logMsg(const char *fmt, ...) {
 #include "GLVideoWidget.h"
 #include "FBVideoWidget.h"
 #include "GLESVideoWidget.h"
+// NOTE: SDLVideoWidget removed from build - SDL video conflicts with Qt on webOS
 
 // Video rendering mode:
 // 0 = Software (VideoWidget with QPainter)
 // 1 = OpenGL (GLVideoWidget - crashes on TouchPad)
-// 2 = Framebuffer (FBVideoWidget - direct /dev/fb0) - WORKS, shows video
-// 3 = OpenGL ES 2.0 (GLESVideoWidget - EGL + GLES2) - fast but layer conflict
+// 2 = Framebuffer (FBVideoWidget - direct /dev/fb0) - WORKS, PDL helps with touch
+// 3 = OpenGL ES 2.0 (GLESVideoWidget - EGL + GLES2) - fast but touch flicker
+// 4 = SDL + OpenGL ES (SDLVideoWidget) - BROKEN: SDL video conflicts with Qt
 #define VIDEO_RENDER_MODE 2
 
 MainWindow::MainWindow(QWidget *parent)
@@ -52,6 +54,7 @@ MainWindow::MainWindow(QWidget *parent)
       m_media(nullptr),
       m_player(nullptr),
       m_fbVideoWidget(nullptr),
+      m_sdlVideoWidget(nullptr),
       m_seeking(false)
 {
     setupVLC();
@@ -85,19 +88,19 @@ void MainWindow::setupVLC()
     args << "--no-snapshot-preview"; // No snapshot preview
     args << "--no-osd";              // No on-screen display
 
-    // Force FFmpeg software decoding - hardware decoders (omxil) fail silently
-    // on many video formats, outputting NV12 but not actually decoding frames
-    args << "--codec=avcodec,none";  // Use FFmpeg avcodec only
-    args << "--avcodec-hw=none";     // Disable hardware acceleration
-    args << "--avcodec-threads=2";   // Limit threads on slow ARM device
+    // Force software decoding - OMX hardware decoding doesn't work properly
+    // (outputs frames at ~1 per 15-20 seconds, likely format/component mismatch)
+    args << "--codec=avcodec,none";  // Use FFmpeg only
+    args << "--avcodec-hw=none";     // No hardware acceleration
 
-    // Decoder optimizations for slow ARM CPU
-    args << "--avcodec-skiploopfilter=4";  // Skip deblocking filter (all frames)
-    args << "--avcodec-skip-idct=4";       // Skip IDCT on all frames (faster, lower quality)
-    args << "--avcodec-skip-frame=1";      // Skip non-reference frames when behind
-    args << "--avcodec-fast";              // Fast decoding mode
-    args << "--avcodec-dr";                // Direct rendering (less copying)
-    args << "--sout-avcodec-hurry-up";     // Allow skipping when behind
+    // avcodec optimization for slow ARM CPU
+    args << "--avcodec-threads=2";
+    args << "--avcodec-skiploopfilter=4";
+    args << "--avcodec-skip-idct=4";
+    args << "--avcodec-skip-frame=1";
+    args << "--avcodec-fast";
+    args << "--avcodec-dr";
+    args << "--sout-avcodec-hurry-up";
 
     // Clock/sync adjustments for smoother playback on slow devices
     args << "--clock-jitter=100";          // Allow more timing jitter
@@ -126,29 +129,36 @@ void MainWindow::setupUI()
     mainLayout->addWidget(m_titleLabel);
 
     // Video widget
-#if VIDEO_RENDER_MODE == 3
-    // OpenGL ES 2.0 with EGL - hardware accelerated
-    logMsg( "MainWindow: Using GLESVideoWidget (EGL + OpenGL ES 2.0)\n");
-        GLESVideoWidget *videoWidget = new GLESVideoWidget(this);
+#if VIDEO_RENDER_MODE == 4
+    // SDL + OpenGL ES - NO TOUCH FLICKER (from PCSX-ReARMed solution)
+    logMsg("MainWindow: Using SDLVideoWidget (SDL + OpenGL ES)\n");
+    SDLVideoWidget *videoWidget = new SDLVideoWidget(this);
+    videoWidget->setMediaPlayer(m_player);
+    m_videoWidget = videoWidget;
+    m_sdlVideoWidget = videoWidget;  // Keep reference for state connections
+#elif VIDEO_RENDER_MODE == 3
+    // OpenGL ES 2.0 with EGL - hardware accelerated but has touch flicker
+    logMsg("MainWindow: Using GLESVideoWidget (EGL + OpenGL ES 2.0)\n");
+    GLESVideoWidget *videoWidget = new GLESVideoWidget(this);
     videoWidget->setMediaPlayer(m_player);
     m_videoWidget = videoWidget;
 #elif VIDEO_RENDER_MODE == 2
     // Direct framebuffer rendering - bypasses Qt
-    logMsg( "MainWindow: Using FBVideoWidget (framebuffer)\n");
-        FBVideoWidget *videoWidget = new FBVideoWidget(this);
+    logMsg("MainWindow: Using FBVideoWidget (framebuffer)\n");
+    FBVideoWidget *videoWidget = new FBVideoWidget(this);
     videoWidget->setMediaPlayer(m_player);
     m_videoWidget = videoWidget;
     m_fbVideoWidget = videoWidget;  // Keep reference for state connections
 #elif VIDEO_RENDER_MODE == 1
     // GPU-accelerated rendering via OpenGL ES 2.0
-    logMsg( "MainWindow: Using GLVideoWidget (OpenGL)\n");
-        GLVideoWidget *videoWidget = new GLVideoWidget(this);
+    logMsg("MainWindow: Using GLVideoWidget (OpenGL)\n");
+    GLVideoWidget *videoWidget = new GLVideoWidget(this);
     videoWidget->setMediaPlayer(m_player);
     m_videoWidget = videoWidget;
 #else
     // Software rendering for webOS
-    logMsg( "MainWindow: Using VideoWidget (software)\n");
-        VideoWidget *videoWidget = new VideoWidget(this);
+    logMsg("MainWindow: Using VideoWidget (software)\n");
+    VideoWidget *videoWidget = new VideoWidget(this);
     videoWidget->setMediaPlayer(m_player);
     m_videoWidget = videoWidget;
 #endif
@@ -232,6 +242,8 @@ void MainWindow::setupConnections()
     connect(m_player, &VlcMediaPlayer::end, this, &MainWindow::onVlcEnd);
     connect(m_player, static_cast<void(VlcMediaPlayer::*)(int)>(&VlcMediaPlayer::buffering),
             this, &MainWindow::onVlcBuffering);
+
+    // SDLVideoWidget connections removed - SDL video conflicts with Qt on webOS
 
     // FBVideoWidget playback state connections - hide/show UI based on playback
     if (m_fbVideoWidget) {
