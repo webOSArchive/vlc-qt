@@ -38,7 +38,12 @@ static void logMsg(const char *fmt, ...) {
 #include "GLVideoWidget.h"
 #include "FBVideoWidget.h"
 #include "GLESVideoWidget.h"
+<<<<<<< HEAD
 // NOTE: SDLVideoWidget removed from build - SDL video conflicts with Qt on webOS
+=======
+#include "VideoProber.h"
+#include "TranscodeDialog.h"
+>>>>>>> d8b4b3134a42e56737b93421ed68964cf4b7e198
 
 // Video rendering mode:
 // 0 = Software (VideoWidget with QPainter)
@@ -269,21 +274,61 @@ void MainWindow::setupConnections()
 
 void MainWindow::openFile(const QString &path)
 {
-    logMsg( "MainWindow::openFile: %s\n", path.toStdString().c_str());
-    
+    logMsg("MainWindow::openFile: %s\n", path.toStdString().c_str());
+
+    // Probe video to check resolution
+    VideoProber::VideoInfo info = VideoProber::probe(path);
+
+    if (info.valid && VideoProber::isHD(info)) {
+        logMsg("MainWindow: HD video detected (%dx%d)\n", info.width, info.height);
+
+        // Check if 480p version already exists
+        QString path480p = VideoProber::get480pPath(path);
+        if (VideoProber::has480pVersion(path)) {
+            logMsg("MainWindow: 480p version exists, playing: %s\n",
+                   path480p.toStdString().c_str());
+            playFile(path480p);
+            return;
+        }
+
+        // Offer transcoding
+        TranscodeDialog dialog(this);
+        dialog.showOffer(info, path);
+
+        int result = dialog.exec();
+        if (result == TranscodeDialog::Transcode || result == TranscodeDialog::TranscodeComplete) {
+            // User completed transcoding, play the 480p version
+            logMsg("MainWindow: Transcode complete, playing 480p version\n");
+            playFile(dialog.outputPath());
+        } else if (result == TranscodeDialog::PlayAnyway) {
+            // User chose to play HD version anyway
+            logMsg("MainWindow: User chose to play HD version anyway\n");
+            playFile(path);
+        }
+        // Cancelled: do nothing
+    } else {
+        // SD video or probe failed - play directly
+        playFile(path);
+    }
+}
+
+void MainWindow::playFile(const QString &path)
+{
+    logMsg("MainWindow::playFile: %s\n", path.toStdString().c_str());
+
     if (m_media) {
         delete m_media;
     }
 
     m_media = new VlcMedia(path, true, m_instance);
-    logMsg( "MainWindow: VlcMedia created, opening with player\n");
-    
+    logMsg("MainWindow: VlcMedia created, opening with player\n");
+
     m_player->open(m_media);
-    logMsg( "MainWindow: player->open() called, calling play()\n");
-    
+    logMsg("MainWindow: player->open() called, calling play()\n");
+
     m_player->play();
-    logMsg( "MainWindow: play() called\n");
-    
+    logMsg("MainWindow: play() called\n");
+
     // Update title
     QFileInfo fileInfo(path);
     m_titleLabel->setText(fileInfo.fileName());
